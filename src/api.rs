@@ -1,31 +1,37 @@
-use std::iter::once;
-use std::marker::PhantomData;
-use std::num::NonZeroU32;
-use std::rc::Rc;
 use bytemuck::Pod;
-use wgpu::{Backends, BindGroupLayout, BlendState, Buffer, BufferUsages, Color, ColorTargetState, ColorWrites, CommandEncoder, CommandEncoderDescriptor, DepthStencilState, Device, DeviceDescriptor, FragmentState, Instance, LoadOp, MultisampleState, Operations, PipelineLayoutDescriptor, PowerPreference, PresentMode, PrimitiveState, PushConstantRange, Queue, RenderPass, RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, RequestAdapterOptions, RequestDeviceError, ShaderModule, ShaderModuleDescriptor, ShaderSource, Surface, SurfaceConfiguration, SurfaceError, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor, VertexBufferLayout, VertexState};
+use std::iter::once;
+use std::num::NonZeroU32;
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
+use wgpu::{
+    Backends, BindGroupLayout, Buffer, BufferUsages, ColorTargetState, CommandEncoderDescriptor,
+    DepthStencilState, Device, DeviceDescriptor, FragmentState, Instance, MultisampleState,
+    PipelineLayoutDescriptor, PowerPreference, PresentMode, PrimitiveState, PushConstantRange,
+    Queue, RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor, RequestAdapterOptions,
+    RequestDeviceError, ShaderModule, ShaderModuleDescriptor, ShaderSource, Surface,
+    SurfaceConfiguration, SurfaceError, TextureFormat, TextureUsages, TextureView,
+    TextureViewDescriptor, VertexBufferLayout, VertexState,
+};
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::window::Window;
 
-pub struct State/*<'a>*/ {
+pub struct State {
     surface: Surface,
     device: Device,
     queue: Queue,
     config: SurfaceConfiguration,
     render_pipelines: Box<[RenderPipeline]>, // FIXME: should this be an Arc?
-    // _phantom_data: PhantomData<&'a ()>,
 }
 
-impl/*<'a>*/ State/*<'a>*/ {
+impl State {
     pub async fn new(
         window: &Window,
         power_pref: PowerPreference,
         descriptor: &DeviceDescriptor<'_>,
         present_mode: PresentMode,
         texture_usages: TextureUsages,
-    ) -> Result<Option<Self/*State<'a>*/>, RequestDeviceError> {
+    ) -> Result<Option<Self>, RequestDeviceError> {
         // FIXME: check if we can somehow choose a better/more descriptive return type
         let size = window.inner_size();
         // The instance is a handle to our GPU
@@ -58,7 +64,6 @@ impl/*<'a>*/ State/*<'a>*/ {
                 queue,
                 config,
                 render_pipelines: Box::new([]),
-                // _phantom_data: Default::default(),
             }));
         }
         Ok(None)
@@ -68,33 +73,36 @@ impl/*<'a>*/ State/*<'a>*/ {
         let mut finished_pipelines = vec![];
         for pipeline in pipelines {
             let render_pipeline_layout =
-                self.device.create_pipeline_layout(&PipelineLayoutDescriptor {
-                    label: None,
-                    bind_group_layouts: pipeline.bind_group_layouts,
-                    push_constant_ranges: pipeline.push_constant_ranges,
-                });
+                self.device
+                    .create_pipeline_layout(&PipelineLayoutDescriptor {
+                        label: None,
+                        bind_group_layouts: pipeline.bind_group_layouts,
+                        push_constant_ranges: pipeline.push_constant_ranges,
+                    });
             let shaders = pipeline.shader_sources.to_modules(&self.device);
 
-            let render_pipeline = self.device.create_render_pipeline(&RenderPipelineDescriptor {
-                label: None,
-                layout: Some(&render_pipeline_layout),
-                vertex: VertexState {
-                    module: shaders.vertex_module(),
-                    entry_point: pipeline.vertex_shader.entry_point,
-                    buffers: pipeline.vertex_shader.buffers,
-                },
-                fragment: pipeline.fragment_shader.map(|fragment_shader| {
-                    FragmentState {
-                        module: shaders.fragment_module(),
-                        entry_point: fragment_shader.entry_point,
-                        targets: fragment_shader.targets,
-                    }
-                }),
-                primitive: pipeline.primitive,
-                depth_stencil: pipeline.depth_stencil, // 1.
-                multisample: pipeline.multisample,
-                multiview: pipeline.multiview, // 5.
-            });
+            let render_pipeline = self
+                .device
+                .create_render_pipeline(&RenderPipelineDescriptor {
+                    label: None,
+                    layout: Some(&render_pipeline_layout),
+                    vertex: VertexState {
+                        module: shaders.vertex_module(),
+                        entry_point: pipeline.vertex_shader.entry_point,
+                        buffers: pipeline.vertex_shader.buffers,
+                    },
+                    fragment: pipeline
+                        .fragment_shader
+                        .map(|fragment_shader| FragmentState {
+                            module: shaders.fragment_module(),
+                            entry_point: fragment_shader.entry_point,
+                            targets: fragment_shader.targets,
+                        }),
+                    primitive: pipeline.primitive,
+                    depth_stencil: pipeline.depth_stencil,
+                    multisample: pipeline.multisample,
+                    multiview: pipeline.multiview,
+                });
 
             finished_pipelines.push(render_pipeline);
         }
@@ -120,8 +128,12 @@ impl/*<'a>*/ State/*<'a>*/ {
 
     pub fn update(&mut self) {}
 
-    /*
-    pub fn render<'a: 'b, 'b: 'c, 'c: 'd, 'd, /*'b, *//*'a, */F: /*FnMut*/Fn/*Once*/(&/*'a*//*'b */mut RenderPass<'c>, &'b Box<[RenderPipeline]>/*<'b>*/) + 'd/* -> Box<[Rc<RenderPipeline>]> + 'a*//* + 'a*/>(&'a self, f: F) -> Result<(), SurfaceError> {
+    pub fn render<'a, F: FnOnce(&TextureView) -> Box<[Option<RenderPassColorAttachment>]>>(
+        &'a self,
+        handler: impl RenderPassHandler<'a>,
+        f: F,
+        depth_stencil_attachment: Option<RenderPassDepthStencilAttachment>,
+    ) -> Result<(), SurfaceError> {
         let output = self.surface.get_current_texture()?;
         // get a view of the current texture in order to render on it
         let view = output
@@ -130,90 +142,15 @@ impl/*<'a>*/ State/*<'a>*/ {
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
-        /*{
-            // create a render pass in the encoder
-            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(RenderPassColorAttachment { // FIXME: parameterize this!
-                    view: &view,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color::RED),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: None,
-            });
-
-            f(&mut render_pass, &self.render_pipelines);
-        }*/
-        let borrowed_encoder = &mut encoder;
-        do_render_pass(&self, borrowed_encoder, &view, f);
-        fn do_render_pass<'a: 'b, 'b: 'c, 'c: 'd, 'd: 'e, 'e: 'f, 'f, F: /*FnMut*/Fn/*Once*/(&'e mut RenderPass<'d>, &'b Box<[RenderPipeline]>) + 'f>(state: &'a State, encoder: &'c mut CommandEncoder, view: &'c TextureView, f: F) {
-            // create a render pass in the encoder
-            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(RenderPassColorAttachment { // FIXME: parameterize this!
-                    view: &view,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color::RED),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: None,
-            });
-
-            f(&mut render_pass, &state.render_pipelines);
-            drop(render_pass);
-        }
-
-        self.queue.submit(once(encoder.finish()));
-        output.present();
-
-        Ok(())
-    }*/
-
-    pub fn render<'a>(&'a self, mut handler: impl RenderPassHandler<'a>) -> Result<(), SurfaceError> {
-        let output = self.surface.get_current_texture()?;
-        // get a view of the current texture in order to render on it
-        let view = output
-            .texture
-            .create_view(&mut TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&CommandEncoderDescriptor::default());
-        /*{
-            // create a render pass in the encoder
-            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: None,
-                color_attachments: &[Some(RenderPassColorAttachment { // FIXME: parameterize this!
-                    view: &view,
-                    resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color::RED),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: None,
-            });
-
-            f(&mut render_pass, &self.render_pipelines);
-        }*/
         // create a render pass in the encoder
+        let color_attachments = f(&view);
         let render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: None,
-            color_attachments: &[Some(RenderPassColorAttachment { // FIXME: parameterize this!
-                view: &view,
-                resolve_target: None,
-                ops: Operations {
-                    load: LoadOp::Clear(Color::BLACK),
-                    store: true,
-                },
-            })],
-            depth_stencil_attachment: None,
+            color_attachments: &color_attachments,
+            depth_stencil_attachment,
         });
         handler.handle(render_pass, &self.render_pipelines);
+        // FIXME: allow for more usage of command encoder
 
         self.queue.submit(once(encoder.finish()));
         output.present();
@@ -238,23 +175,6 @@ impl/*<'a>*/ State/*<'a>*/ {
             usage,
         })
     }
-
-    /*s
-    #[inline]
-    pub const fn render_pipeline(&self, index: usize) -> Option<Rc<RenderPipeline>> {
-        self.render_pipelines.get(index).map(|pipeline| pipeline.clone())
-    }*/
-
-    /*
-    pub fn try_set_render_pipeline/*<'a, 'b: 'a>*/(&/*'a *//*'a */self, render_pass: &/*'a */mut RenderPass/*<'a>*/, idx: usize) -> bool {
-        if let Some(render_pipeline) = self.render_pipelines.get(idx) {
-            render_pass.set_pipeline(render_pipeline);
-            true
-        } else {
-            false
-        }
-    }*/
-
 }
 
 pub struct PipelineState<'a> {
@@ -282,7 +202,6 @@ pub struct PipelineStateBuilder<'a> {
 }
 
 impl<'a> PipelineStateBuilder<'a> {
-
     pub fn new() -> Self {
         Self {
             vertex_shader: None,
@@ -355,7 +274,6 @@ impl<'a> PipelineStateBuilder<'a> {
             shader_sources: self.shader_sources.unwrap(),
         }
     }
-
 }
 
 pub struct VertexShaderState<'a> {
@@ -374,40 +292,12 @@ pub struct FragmentShaderState<'a> {
     pub targets: &'a [Option<ColorTargetState>],
 }
 
-/*
-enum ShaderModuleSupply {
-    Vertex(ShaderModule),
-    Single(ShaderModule),
-    Multi(ShaderModule, ShaderModule),
-}
-
-impl From<(ShaderSource, Option<ShaderSource>, &Device)> for ShaderModuleSupply {
-    fn from(sources: (ShaderSource, Option<ShaderSource>, &Device)) -> Self {
-        if let Some(frag_src) = sources.1 {
-            // FIXME: detect same sources and map them to a single shader module
-            ShaderModuleSupply::Multi(sources.2.create_shader_module(ShaderModuleDescriptor {
-                label: None,
-                source: sources.0,
-            }), sources.2.create_shader_module(ShaderModuleDescriptor {
-                label: None,
-                source: frag_src,
-            }))
-        } else {
-            ShaderModuleSupply::Vertex(sources.2.create_shader_module(ShaderModuleDescriptor {
-                label: None,
-                source: sources.0,
-            }))
-        }
-    }
-}*/
-
 pub enum ShaderModuleSources<'a> {
     Single(ShaderSource<'a>),
     Multi(ShaderSource<'a>, ShaderSource<'a>),
 }
 
 impl<'a> ShaderModuleSources<'a> {
-
     fn to_modules(self, device: &Device) -> ShaderModules {
         match self {
             ShaderModuleSources::Single(src) => {
@@ -415,21 +305,19 @@ impl<'a> ShaderModuleSources<'a> {
                     label: None,
                     source: src,
                 }))
-            },
-            ShaderModuleSources::Multi(vertex_src, fragment_src) => {
-                ShaderModules::Multi(
-                    device.create_shader_module(ShaderModuleDescriptor {
-                        label: None,
-                        source: vertex_src,
-                    }),
-                    device.create_shader_module(ShaderModuleDescriptor {
-                        label: None,
-                        source: fragment_src,
-                    }))
-            },
+            }
+            ShaderModuleSources::Multi(vertex_src, fragment_src) => ShaderModules::Multi(
+                device.create_shader_module(ShaderModuleDescriptor {
+                    label: None,
+                    source: vertex_src,
+                }),
+                device.create_shader_module(ShaderModuleDescriptor {
+                    label: None,
+                    source: fragment_src,
+                }),
+            ),
         }
     }
-
 }
 
 enum ShaderModules {
@@ -438,7 +326,6 @@ enum ShaderModules {
 }
 
 impl ShaderModules {
-
     fn vertex_module(&self) -> &ShaderModule {
         match self {
             ShaderModules::Single(module) => &module,
@@ -452,11 +339,13 @@ impl ShaderModules {
             ShaderModules::Multi(_, fragment_module) => &fragment_module,
         }
     }
-
 }
 
 pub trait RenderPassHandler<'a> {
-
-    fn handle<'b: 'c, 'c>(&mut self, render_pass: RenderPass<'b>, render_pipelines: &'a Box<[RenderPipeline]>) where 'a: 'b;
-
+    fn handle<'b: 'c, 'c>(
+        self,
+        render_pass: RenderPass<'c>,
+        render_pipelines: &'b Box<[RenderPipeline]>,
+    ) where
+        'a: 'b;
 }

@@ -10,3 +10,11 @@ wgpu = "0.13.1"
 winit = "0.26.1"
 pollster = "0.2.5"
 bytemuck = { version = "1.11.0", features = ["derive"] }
+cgmath = "0.18.0"
+rand = "0.8.5"
+parking_lot = "0.12.1"
+
+[dependencies.image]
+version = "0.24.3"
+default-features = false
+features = ["png", "jpeg"]

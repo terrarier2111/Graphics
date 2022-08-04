@@ -8,6 +8,7 @@ use crate::api::{
 };
 use cgmath::prelude::*;
 use cgmath::{perspective, Deg, Matrix4, Quaternion, Vector3};
+use parking_lot::Mutex;
 use rand::Rng;
 use std::mem::size_of;
 use std::sync::Arc;
@@ -17,13 +18,13 @@ use std::time::Duration;
 use wgpu::{
     vertex_attr_array, AddressMode, BindGroup, BindGroupEntry, BindGroupLayoutEntry,
     BindingResource, BindingType, BlendState, Buffer, BufferAddress, BufferBindingType,
-    BufferSlice, BufferUsages, Color, ColorTargetState, ColorWrites, Face, Features, FilterMode,
-    FrontFace, IndexFormat, Limits, LoadOp, MultisampleState, Operations, PolygonMode, PresentMode,
-    PrimitiveState, PrimitiveTopology, RenderPass, RenderPassColorAttachment, RenderPipeline,
-    Sampler, SamplerBindingType, SamplerDescriptor, ShaderSource, ShaderStages, SurfaceError,
-    Texture, TextureAspect, TextureDimension, TextureFormat, TextureSampleType, TextureUsages,
-    TextureView, TextureViewDescriptor, TextureViewDimension, VertexAttribute, VertexBufferLayout,
-    VertexFormat, VertexStepMode,
+    BufferSlice, BufferUsages, Color, ColorTargetState, ColorWrites, CompareFunction,
+    DepthStencilState, Face, Features, FilterMode, FrontFace, IndexFormat, Limits, LoadOp,
+    MultisampleState, Operations, PolygonMode, PresentMode, PrimitiveState, PrimitiveTopology,
+    RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPipeline,
+    SamplerBindingType, SamplerDescriptor, ShaderSource, ShaderStages, SurfaceError, TextureAspect,
+    TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureViewDescriptor,
+    TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
 };
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -153,8 +154,42 @@ async fn run() {
             ty: BindingType::Sampler(SamplerBindingType::Filtering),
             count: None,
         },
+        BindGroupLayoutEntry {
+            binding: 2,
+            visibility: ShaderStages::FRAGMENT,
+            // This should match the filterable field of the
+            // corresponding Texture entry above.
+            ty: BindingType::Texture {
+                multisampled: false,
+                view_dimension: TextureViewDimension::D2,
+                sample_type: TextureSampleType::Depth,
+            },
+            count: None,
+        },
+        BindGroupLayoutEntry {
+            binding: 3,
+            visibility: ShaderStages::FRAGMENT,
+            // This should match the filterable field of the
+            // corresponding Texture entry above.
+            ty: BindingType::Sampler(SamplerBindingType::Comparison),
+            count: None,
+        },
     ]);
-    let bind_group = state.create_bind_group(
+    let depth_tex = state.create_depth_texture();
+    let depth_view = depth_tex.create_view(&TextureViewDescriptor::default());
+    let depth_sampler = state.device().create_sampler(&SamplerDescriptor {
+        address_mode_u: AddressMode::ClampToEdge,
+        address_mode_v: AddressMode::ClampToEdge,
+        address_mode_w: AddressMode::ClampToEdge,
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
+        mipmap_filter: FilterMode::Nearest,
+        compare: Some(CompareFunction::LessEqual), // 5.
+        lod_min_clamp: -100.0,
+        lod_max_clamp: 100.0,
+        ..Default::default()
+    });
+    let bind_group = Arc::new(Mutex::from(state.create_bind_group(
         &bind_group_layout,
         &[
             BindGroupEntry {
@@ -165,8 +200,16 @@ async fn run() {
                 binding: 1,
                 resource: BindingResource::Sampler(&tree_sampler),
             },
+            BindGroupEntry {
+                binding: 2,
+                resource: BindingResource::TextureView(&depth_view),
+            },
+            BindGroupEntry {
+                binding: 3,
+                resource: BindingResource::Sampler(&depth_sampler),
+            },
         ],
-    );
+    )));
     let camera_bind_group_layout = state.create_bind_group_layout(&[BindGroupLayoutEntry {
         binding: 0,
         visibility: ShaderStages::VERTEX,
@@ -218,6 +261,13 @@ async fn run() {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             })
+            .depth_stencil(DepthStencilState {
+                format: State::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            })
             .shader_src(ShaderModuleSources::Single(ShaderSource::Wgsl(
                 include_str!("shader.wgsl").into(),
             )))
@@ -254,6 +304,13 @@ async fn run() {
                 mask: !0,
                 alpha_to_coverage_enabled: false,
             })
+            .depth_stencil(DepthStencilState {
+                format: State::DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            })
             .shader_src(ShaderModuleSources::Single(ShaderSource::Wgsl(
                 include_str!("new_shader.wgsl").into(),
             )))
@@ -266,15 +323,18 @@ async fn run() {
         camera_uniform,
         camera_controller,
         camera_buffer,
-        _tex: (tree_tex, tree_texture_view, tree_sampler),
     };
 
     let tmp_state = state.state.clone();
     let tmp_instance_buffer = instance_buffer.clone();
+    let tmp_bind_group = bind_group.clone();
     thread::spawn(move || {
         let state = tmp_state;
         let instance_buffer = tmp_instance_buffer;
+        let tree_texture_view = tree_texture_view;
+        let tree_sampler = tree_sampler;
         loop {
+            sleep(Duration::new(1, 0));
             let rand = rand::thread_rng().gen_range(0.0..1.0);
             let instances = (0..NUM_INSTANCES_PER_ROW)
                 .flat_map(|z| {
@@ -305,8 +365,32 @@ async fn run() {
                 .collect::<Vec<_>>();
             let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
             state.write_buffer(&instance_buffer, 0, &instance_data);
+            let depth_tex = state.create_depth_texture();
+            let depth_view = depth_tex.create_view(&TextureViewDescriptor::default());
 
-            sleep(Duration::new(1, 0));
+            let bind_group = tmp_bind_group.clone();
+            let mut bind_group = bind_group.lock();
+            *bind_group = state.create_bind_group(
+                &bind_group_layout,
+                &[
+                    BindGroupEntry {
+                        binding: 0,
+                        resource: BindingResource::TextureView(&tree_texture_view),
+                    },
+                    BindGroupEntry {
+                        binding: 1,
+                        resource: BindingResource::Sampler(&tree_sampler),
+                    },
+                    BindGroupEntry {
+                        binding: 2,
+                        resource: BindingResource::TextureView(&depth_view),
+                    },
+                    BindGroupEntry {
+                        binding: 3,
+                        resource: BindingResource::Sampler(&depth_sampler),
+                    },
+                ],
+            );
         }
     });
 
@@ -364,6 +448,10 @@ async fn run() {
         Event::RedrawRequested(window_id) if window_id == window.id() => {
             state.update();
             let dynamic_color = dynamic_color;
+            let depth_tex = state.state.create_depth_texture();
+            let depth_view = depth_tex.create_view(&TextureViewDescriptor::default());
+            let bind_group = bind_group.clone();
+            let bind_group = bind_group.lock();
             match state.state.render(
                 SimpleRenderPassHandler {
                     dynamic_color,
@@ -383,7 +471,14 @@ async fn run() {
                         },
                     })]) as Box<[Option<RenderPassColorAttachment>]>
                 },
-                None,
+                Some(RenderPassDepthStencilAttachment {
+                    view: &depth_view,
+                    depth_ops: Some(Operations {
+                        load: LoadOp::Clear(1.0),
+                        store: true,
+                    }),
+                    stencil_ops: None,
+                }),
             ) {
                 Ok(_) => {}
                 // Reconfigure the surface if lost
@@ -714,7 +809,6 @@ struct AppState {
     camera_buffer: Buffer,
     camera_uniform: CameraUniform,
     camera_controller: CameraController,
-    _tex: (Texture, TextureView, Sampler),
 }
 
 impl AppState {

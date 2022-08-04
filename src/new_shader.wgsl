@@ -49,6 +49,10 @@ fn vs_main(
 var t_diffuse: texture_2d<f32>;
 @group(0) @binding(1)
 var s_diffuse: sampler;
+@group(0) @binding(2)
+var t_depth: texture_depth_2d;
+@group(0) @binding(3)
+var s_depth: sampler_comparison;
 
 @fragment
 fn frag_main(
@@ -57,4 +61,10 @@ fn frag_main(
     in: VertexOutput
 ) -> @location(0) vec4<f32> {
     return textureSample(t_diffuse, s_diffuse, in.tex_coords);
+    // return textureSampleCompare(t_depth, s_depth, in.tex_coords, 1.0) * vec4<f32>(1.0, 1.0, 1.0, 1.0);
+    /*let near = 0.1;
+    let far = 100.0;
+    let depth = textureSampleCompare(t_depth, s_depth, in.tex_coords, in.clip_position.w);
+    let r = (2.0 * near) / (far + near - depth * (far - near));
+    return vec4<f32>(vec3<f32>(r), 1.0);*/
 }

@@ -283,6 +283,27 @@ impl State {
         self.queue
             .write_buffer(buffer, offset, bytemuck::cast_slice(data));
     }
+
+    pub const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float; // FIXME: should we parameterize this on `create_depth_texture`?
+
+    pub fn create_depth_texture(&self) -> Texture {
+        let (width, height) = self.dimensions();
+        let size = Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+        let texture_desc = TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: Self::DEPTH_FORMAT,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
+        };
+        self.device.create_texture(&texture_desc)
+    }
 }
 
 pub struct PipelineState<'a> {

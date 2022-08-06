@@ -33,7 +33,7 @@ fn vs_main(
             instance.model_matrix_0,
             instance.model_matrix_1,
             instance.model_matrix_2,
-            instance.model_matrix_3
+            instance.model_matrix_3,
        );
     var out: VertexOutput;
     // let x = f32(1 - i32(in_vertex_index)) * 0.5;
@@ -49,10 +49,6 @@ fn vs_main(
 var t_diffuse: texture_2d<f32>;
 @group(0) @binding(1)
 var s_diffuse: sampler;
-@group(0) @binding(2)
-var t_depth: texture_depth_2d;
-@group(0) @binding(3)
-var s_depth: sampler_comparison;
 
 @fragment
 fn frag_main(

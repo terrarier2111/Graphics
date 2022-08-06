@@ -1,11 +1,14 @@
 #![feature(new_uninit)]
 
 mod api;
+mod model;
+mod resources;
 
 use crate::api::{
     DeviceRequirements, FragmentShaderState, PipelineState, PipelineStateBuilder,
     RenderPassHandler, ShaderModuleSources, State, VertexShaderState,
 };
+use crate::model::{DrawModel, Model, ModelVertex, Vertex};
 use cgmath::prelude::*;
 use cgmath::{perspective, Deg, Matrix4, Quaternion, Vector3};
 use parking_lot::Mutex;
@@ -53,27 +56,27 @@ async fn run() {
     .await
     .unwrap()
     .unwrap();
-    let instances = (0..NUM_INSTANCES_PER_ROW)
-        .flat_map(|z| {
-            (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                let position = Vector3 {
-                    x: x as f32,
-                    y: 0.0,
-                    z: z as f32,
-                } - INSTANCE_DISPLACEMENT;
 
-                let rotation = if position.is_zero() {
-                    // this is needed so an object at (0, 0, 0) won't get scaled to zero
-                    // as Quaternions can effect scale if they're not created correctly
-                    Quaternion::from_axis_angle(Vector3::unit_z(), Deg(0.0))
-                } else {
-                    Quaternion::from_axis_angle(position.normalize(), Deg(45.0))
-                };
+    const SPACE_BETWEEN: f32 = 3.0;
+    let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
+        (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+            let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+            let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
 
-                Instance { position, rotation }
-            })
+            let position = cgmath::Vector3 { x, y: 0.0, z };
+
+            let rotation = if position.is_zero() {
+                cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
+            } else {
+                cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
+            };
+
+            Instance {
+                position, rotation,
+            }
         })
-        .collect::<Vec<_>>();
+    }).collect::<Vec<_>>();
+
     let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
     // acos
     let camera = Camera {
@@ -102,8 +105,8 @@ async fn run() {
         BufferUsages::VERTEX | BufferUsages::COPY_DST,
     ));
 
-    let vertex_buffer = state.create_buffer(&VERTICES, BufferUsages::VERTEX);
-    let index_buffer = state.create_buffer(&INDICES, BufferUsages::INDEX);
+    // let vertex_buffer = state.create_buffer(&VERTICES, BufferUsages::VERTEX);
+    // let index_buffer = state.create_buffer(&INDICES, BufferUsages::INDEX);
     let tree_tex = {
         let diffuse_bytes = include_bytes!("happy-tree.png");
         let diffuse_image = image::load_from_memory(diffuse_bytes).unwrap();
@@ -154,41 +157,12 @@ async fn run() {
             ty: BindingType::Sampler(SamplerBindingType::Filtering),
             count: None,
         },
-        BindGroupLayoutEntry {
-            binding: 2,
-            visibility: ShaderStages::FRAGMENT,
-            // This should match the filterable field of the
-            // corresponding Texture entry above.
-            ty: BindingType::Texture {
-                multisampled: false,
-                view_dimension: TextureViewDimension::D2,
-                sample_type: TextureSampleType::Depth,
-            },
-            count: None,
-        },
-        BindGroupLayoutEntry {
-            binding: 3,
-            visibility: ShaderStages::FRAGMENT,
-            // This should match the filterable field of the
-            // corresponding Texture entry above.
-            ty: BindingType::Sampler(SamplerBindingType::Comparison),
-            count: None,
-        },
     ]);
-    let depth_tex = state.create_depth_texture();
-    let depth_view = depth_tex.create_view(&TextureViewDescriptor::default());
-    let depth_sampler = state.device().create_sampler(&SamplerDescriptor {
-        address_mode_u: AddressMode::ClampToEdge,
-        address_mode_v: AddressMode::ClampToEdge,
-        address_mode_w: AddressMode::ClampToEdge,
-        mag_filter: FilterMode::Linear,
-        min_filter: FilterMode::Linear,
-        mipmap_filter: FilterMode::Nearest,
-        compare: Some(CompareFunction::LessEqual), // 5.
-        lod_min_clamp: -100.0,
-        lod_max_clamp: 100.0,
-        ..Default::default()
-    });
+    let obj_model = Model::load_from(
+        "cube.obj",
+        &state,
+        &bind_group_layout,
+    ).await.unwrap();
     let bind_group = Arc::new(Mutex::from(state.create_bind_group(
         &bind_group_layout,
         &[
@@ -199,14 +173,6 @@ async fn run() {
             BindGroupEntry {
                 binding: 1,
                 resource: BindingResource::Sampler(&tree_sampler),
-            },
-            BindGroupEntry {
-                binding: 2,
-                resource: BindingResource::TextureView(&depth_view),
-            },
-            BindGroupEntry {
-                binding: 3,
-                resource: BindingResource::Sampler(&depth_sampler),
             },
         ],
     )));
@@ -234,7 +200,7 @@ async fn run() {
             .push_constant_ranges(&[])
             .vertex(VertexShaderState {
                 entry_point: "vs_main",
-                buffers: &[Vertex::desc(), InstanceRaw::desc()],
+                buffers: &[ModelVertex::desc(), InstanceRaw::desc()],
             })
             .fragment(FragmentShaderState {
                 entry_point: "frag_main",
@@ -277,7 +243,7 @@ async fn run() {
             .push_constant_ranges(&[])
             .vertex(VertexShaderState {
                 entry_point: "vs_main",
-                buffers: &[Vertex::desc(), InstanceRaw::desc()],
+                buffers: &[ModelVertex::desc(), InstanceRaw::desc()],
             })
             .fragment(FragmentShaderState {
                 entry_point: "frag_main",
@@ -327,70 +293,34 @@ async fn run() {
 
     let tmp_state = state.state.clone();
     let tmp_instance_buffer = instance_buffer.clone();
-    let tmp_bind_group = bind_group.clone();
     thread::spawn(move || {
         let state = tmp_state;
         let instance_buffer = tmp_instance_buffer;
-        let tree_texture_view = tree_texture_view;
-        let tree_sampler = tree_sampler;
         loop {
             sleep(Duration::new(1, 0));
-            let rand = rand::thread_rng().gen_range(0.0..1.0);
-            let instances = (0..NUM_INSTANCES_PER_ROW)
-                .flat_map(|z| {
-                    (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                        let position = cgmath::Vector3 {
-                            x: x as f32 * rand,
-                            y: 0.0,
-                            z: z as f32 * rand,
-                        } - INSTANCE_DISPLACEMENT;
+            let rand = rand::thread_rng().gen_range(0.5..1.0);
+            const SPACE_BETWEEN: f32 = 3.0;
+            let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
+                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                    let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0) * rand;
+                    let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0) * rand;
 
-                        let rotation = if position.is_zero() {
-                            // this is needed so an object at (0, 0, 0) won't get scaled to zero
-                            // as Quaternions can effect scale if they're not created correctly
-                            cgmath::Quaternion::from_axis_angle(
-                                cgmath::Vector3::unit_z(),
-                                cgmath::Deg(0.0),
-                            )
-                        } else {
-                            cgmath::Quaternion::from_axis_angle(
-                                position.normalize(),
-                                cgmath::Deg(45.0),
-                            )
-                        };
+                    let position = cgmath::Vector3 { x, y: 0.0, z };
 
-                        Instance { position, rotation }
-                    })
+                    let rotation = if position.is_zero() {
+                        cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
+                    } else {
+                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
+                    };
+
+                    Instance {
+                        position, rotation,
+                    }
                 })
-                .collect::<Vec<_>>();
+            }).collect::<Vec<_>>();
+
             let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
             state.write_buffer(&instance_buffer, 0, &instance_data);
-            let depth_tex = state.create_depth_texture();
-            let depth_view = depth_tex.create_view(&TextureViewDescriptor::default());
-
-            let bind_group = tmp_bind_group.clone();
-            let mut bind_group = bind_group.lock();
-            *bind_group = state.create_bind_group(
-                &bind_group_layout,
-                &[
-                    BindGroupEntry {
-                        binding: 0,
-                        resource: BindingResource::TextureView(&tree_texture_view),
-                    },
-                    BindGroupEntry {
-                        binding: 1,
-                        resource: BindingResource::Sampler(&tree_sampler),
-                    },
-                    BindGroupEntry {
-                        binding: 2,
-                        resource: BindingResource::TextureView(&depth_view),
-                    },
-                    BindGroupEntry {
-                        binding: 3,
-                        resource: BindingResource::Sampler(&depth_sampler),
-                    },
-                ],
-            );
         }
     });
 
@@ -455,9 +385,8 @@ async fn run() {
             match state.state.render(
                 SimpleRenderPassHandler {
                     dynamic_color,
-                    vertex_buffer: vertex_buffer.slice(..),
+                    obj_model: &obj_model,
                     instance_buffer: instance_buffer.slice(..),
-                    index_buffer: index_buffer.slice(..),
                     bind_groups: &[&bind_group, &camera_bind_group],
                     instance_count: instances.len(),
                 },
@@ -498,13 +427,14 @@ async fn run() {
     });
 }
 
+/*s
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 3],
     // color: [f32; 4],
     tex_coords: [f32; 2],
-}
+}*/
 
 /*
 const VERTICES: &[Vertex] = &[
@@ -596,6 +526,7 @@ const VERTICES: &[Vertex] = &[
     Vertex { position: [0.35966998, -0.3473291, 0.0], color: [0.5, 0.0, 0.5, 1.0] }, // D
     Vertex { position: [0.44147372, 0.2347359, 0.0], color: [0.5, 0.0, 0.5, 1.0] }, // E
 ];*/
+/*
 const VERTICES: &[Vertex] = &[
     Vertex {
         position: [-0.0868241, 0.49240386, 0.0],
@@ -632,13 +563,12 @@ impl Vertex {
             attributes: &Self::ATTRIBS,
         }
     }
-}
+}*/
 
 struct SimpleRenderPassHandler<'a> {
     dynamic_color: bool,
-    vertex_buffer: BufferSlice<'a>,
+    obj_model: &'a Model,
     instance_buffer: BufferSlice<'a>,
-    index_buffer: BufferSlice<'a>,
     bind_groups: &'a [&'a BindGroup],
     instance_count: usize,
 }
@@ -659,11 +589,12 @@ impl<'a> RenderPassHandler<'a> for SimpleRenderPassHandler<'a> {
 
         render_pass.set_bind_group(0, self.bind_groups[0], &[]);
         render_pass.set_bind_group(1, self.bind_groups[1], &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer);
+        // render_pass.set_vertex_buffer(0, self.vertex_buffer);
         render_pass.set_vertex_buffer(1, self.instance_buffer);
-        render_pass.set_index_buffer(self.index_buffer, IndexFormat::Uint16);
+        // render_pass.set_index_buffer(self.index_buffer, IndexFormat::Uint16);
 
-        render_pass.draw_indexed(0..(INDICES.len() as u32), 0, 0..self.instance_count as _);
+        // render_pass.draw_indexed(0..(INDICES.len() as u32), 0, 0..self.instance_count as _);
+        render_pass.draw_mesh_instanced(&self.obj_model.meshes[0], 0..self.instance_count as u32);
     }
 }
 

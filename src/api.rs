@@ -2,6 +2,7 @@ use bytemuck::Pod;
 use parking_lot::RwLock;
 use std::iter::once;
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicBool, Ordering};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
     Backends, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
@@ -14,7 +15,7 @@ use wgpu::{
     RenderPipelineDescriptor, RequestAdapterOptions, RequestDeviceError, ShaderModule,
     ShaderModuleDescriptor, ShaderSource, Surface, SurfaceConfiguration, SurfaceError, Texture,
     TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
-    TextureViewDescriptor, VertexBufferLayout, VertexState,
+    TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState,
 };
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
@@ -25,6 +26,7 @@ pub struct State {
     queue: Queue,
     config: RwLock<SurfaceConfiguration>,
     render_pipelines: Box<[RenderPipeline]>, // FIXME: should this be an Arc?
+    surface_texture_alive: AtomicBool,
 }
 
 impl State {
@@ -75,6 +77,7 @@ impl State {
                 queue,
                 config: RwLock::new(config),
                 render_pipelines: Box::new([]),
+                surface_texture_alive: Default::default(),
             }));
         }
         Ok(None)
@@ -129,6 +132,7 @@ impl State {
             let mut config = self.config.write();
             config.width = size.width;
             config.height = size.height;
+            // FIXME: should we verify that there exist no old textures?
             self.surface.configure(&self.device, &*config);
             true
         } else {
@@ -142,6 +146,7 @@ impl State {
         color_provider: F,
         depth_stencil_attachment: Option<RenderPassDepthStencilAttachment>,
     ) -> Result<(), SurfaceError> {
+        self.surface_texture_alive.store(true, Ordering::Release);
         let output = self.surface.get_current_texture()?;
         // get a view of the current texture in order to render on it
         let view = output
@@ -162,6 +167,7 @@ impl State {
 
         self.queue.submit(once(encoder.finish()));
         output.present();
+        self.surface_texture_alive.store(false, Ordering::Release);
 
         Ok(())
     }
@@ -176,16 +182,37 @@ impl State {
         config.format.clone()
     }
 
+    pub fn try_update_present_mode(&self, present_mode: PresentMode) -> bool {
+        if !self.surface_texture_alive.load(Ordering::Acquire) {
+            let mut config = self.config.write();
+            config.present_mode = present_mode;
+            self.surface.configure(&self.device, &*config);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn update_present_mode(&self, present_mode: PresentMode) {
+        while !self.try_update_present_mode(present_mode) {
+            // do nothing, as we just want to update the present mode
+        }
+    }
+
     #[inline]
     pub const fn device(&self) -> &Device {
         &self.device
     }
 
-    /*
     #[inline]
     pub const fn queue(&self) -> &Queue {
         &self.queue
-    }*/
+    }
+
+    #[inline]
+    pub const fn surface(&self) -> &Surface {
+        &self.surface
+    }
 
     pub fn dimensions(&self) -> (u32, u32) {
         let config = self.config.read();
@@ -211,6 +238,7 @@ impl State {
         aspect: TextureAspect,
         sample_count: Option<u32>,
         mip_info: Option<MipInfo>,
+        depth_or_array_layers: Option<u32>,
     ) -> Texture {
         let mip_info = mip_info.unwrap_or(MipInfo {
             origin: Origin3d::ZERO,
@@ -220,7 +248,7 @@ impl State {
         let texture_size = Extent3d {
             width: dimensions.0,
             height: dimensions.1,
-            depth_or_array_layers: 1, // FIXME: do we need to parameterize this?
+            depth_or_array_layers: depth_or_array_layers.unwrap_or(1),
         };
         let diffuse_texture = self.device.create_texture(&TextureDescriptor {
             // All textures are stored as 3D, we represent our 2D texture
@@ -284,9 +312,7 @@ impl State {
             .write_buffer(buffer, offset, bytemuck::cast_slice(data));
     }
 
-    pub const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float; // FIXME: should we parameterize this on `create_depth_texture`?
-
-    pub fn create_depth_texture(&self) -> Texture {
+    pub fn create_depth_texture(&self, format: TextureFormat) -> Texture {
         let (width, height) = self.dimensions();
         let size = Extent3d {
             width,
@@ -299,7 +325,7 @@ impl State {
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
-            format: Self::DEPTH_FORMAT,
+            format,
             usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
         };
         self.device.create_texture(&texture_desc)
@@ -318,6 +344,7 @@ pub struct PipelineState<'a> {
     shader_sources: ShaderModuleSources<'a>,
 }
 
+#[derive(Default)]
 pub struct PipelineStateBuilder<'a> {
     vertex_shader: Option<VertexShaderState<'a>>,
     fragment_shader: Option<FragmentShaderState<'a>>,
@@ -331,18 +358,9 @@ pub struct PipelineStateBuilder<'a> {
 }
 
 impl<'a> PipelineStateBuilder<'a> {
+    #[inline]
     pub fn new() -> Self {
-        Self {
-            vertex_shader: None,
-            fragment_shader: None,
-            primitive: None,
-            bind_group_layouts: None,
-            push_constant_ranges: None,
-            depth_stencil: None,
-            multisample: None,
-            multiview: None,
-            shader_sources: None,
-        }
+        Self::default()
     }
 
     pub fn vertex(mut self, vertex_shader: VertexShaderState<'a>) -> Self {
@@ -488,4 +506,28 @@ pub struct MipInfo {
 pub struct DeviceRequirements {
     pub features: Features,
     pub limits: Limits,
+}
+
+pub const fn matrix<const COLUMNS: usize>(
+    offset: u64,
+    location: u32,
+    format: VertexFormat,
+) -> [VertexAttribute; COLUMNS] {
+    let mut ret = [VertexAttribute {
+        format,
+        offset: 0,
+        shader_location: 0,
+    }; COLUMNS];
+
+    let mut x = 0;
+    while COLUMNS > x {
+        ret[x] = VertexAttribute {
+            format,
+            offset: (offset + format.size() * x as u64) as BufferAddress,
+            shader_location: location + x as u32,
+        };
+        x += 1;
+    }
+
+    ret
 }

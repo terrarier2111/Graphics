@@ -6,7 +6,12 @@ use std::io::{BufReader, Cursor};
 use std::mem::size_of;
 use std::ops::Range;
 use tobj::LoadOptions;
-use wgpu::{AddressMode, BindGroup, BindGroupEntry, BindGroupLayout, BindingResource, Buffer, BufferAddress, BufferUsages, FilterMode, IndexFormat, RenderPass, Sampler, SamplerDescriptor, Texture, TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode};
+use wgpu::{
+    AddressMode, BindGroup, BindGroupEntry, BindGroupLayout, BindingResource, Buffer,
+    BufferAddress, BufferUsages, FilterMode, IndexFormat, RenderPass, Sampler, SamplerDescriptor,
+    Texture, TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
+    VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
+};
 
 pub trait Vertex {
     fn desc<'a>() -> VertexBufferLayout<'a>;
@@ -196,22 +201,14 @@ impl ContainedTexture {
 
 pub trait DrawModel<'a> {
     fn draw_mesh(&mut self, mesh: &'a Mesh);
-    fn draw_mesh_instanced(
-        &mut self,
-        mesh: &'a Mesh,
-        instances: Range<u32>,
-    );
+    fn draw_mesh_instanced(&mut self, mesh: &'a Mesh, instances: Range<u32>);
 }
 impl<'a, 'b: 'a> DrawModel<'b> for RenderPass<'a> {
     fn draw_mesh(&mut self, mesh: &'b Mesh) {
         self.draw_mesh_instanced(mesh, 0..1);
     }
 
-    fn draw_mesh_instanced(
-        &mut self,
-        mesh: &'b Mesh,
-        instances: Range<u32>,
-    ){
+    fn draw_mesh_instanced(&mut self, mesh: &'b Mesh, instances: Range<u32>) {
         self.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
         self.set_index_buffer(mesh.index_buffer.slice(..), IndexFormat::Uint32);
         self.draw_indexed(0..mesh.num_elements, 0, instances);

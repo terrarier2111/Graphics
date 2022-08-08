@@ -10,7 +10,7 @@ use crate::api::{
 };
 use crate::model::{DrawModel, Model, ModelVertex, Vertex};
 use cgmath::prelude::*;
-use cgmath::{perspective, Deg, Matrix4, Quaternion, Vector3};
+use cgmath::{perspective, Deg, Matrix4, Point3, Quaternion, Vector3};
 use parking_lot::Mutex;
 use rand::Rng;
 use std::mem::size_of;
@@ -19,19 +19,21 @@ use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 use wgpu::{
-    vertex_attr_array, AddressMode, BindGroup, BindGroupEntry, BindGroupLayoutEntry,
-    BindingResource, BindingType, BlendState, Buffer, BufferAddress, BufferBindingType,
-    BufferSlice, BufferUsages, Color, ColorTargetState, ColorWrites, CompareFunction,
-    DepthStencilState, Face, Features, FilterMode, FrontFace, IndexFormat, Limits, LoadOp,
-    MultisampleState, Operations, PolygonMode, PresentMode, PrimitiveState, PrimitiveTopology,
-    RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPipeline,
-    SamplerBindingType, SamplerDescriptor, ShaderSource, ShaderStages, SurfaceError, TextureAspect,
-    TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureViewDescriptor,
-    TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
+    AddressMode, BindGroup, BindGroupEntry, BindGroupLayoutEntry, BindingResource, BindingType,
+    BlendState, Buffer, BufferAddress, BufferBindingType, BufferSlice, BufferUsages, Color,
+    ColorTargetState, ColorWrites, CompareFunction, DepthStencilState, Face, Features, FilterMode,
+    FrontFace, Limits, LoadOp, MultisampleState, Operations, PolygonMode, PresentMode,
+    PrimitiveState, PrimitiveTopology, RenderPass, RenderPassColorAttachment,
+    RenderPassDepthStencilAttachment, RenderPipeline, SamplerBindingType, SamplerDescriptor,
+    ShaderSource, ShaderStages, SurfaceError, TextureAspect, TextureDimension, TextureFormat,
+    TextureSampleType, TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexAttribute,
+    VertexBufferLayout, VertexFormat, VertexStepMode,
 };
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
+
+const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 
 fn main() {
     pollster::block_on(run());
@@ -58,24 +60,24 @@ async fn run() {
     .unwrap();
 
     const SPACE_BETWEEN: f32 = 3.0;
-    let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
-        (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-            let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
-            let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+    let instances = (0..NUM_INSTANCES_PER_ROW)
+        .flat_map(|z| {
+            (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
+                let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0);
 
-            let position = cgmath::Vector3 { x, y: 0.0, z };
+                let position = Vector3 { x, y: 0.0, z };
 
-            let rotation = if position.is_zero() {
-                cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
-            } else {
-                cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
-            };
+                let rotation = if position.is_zero() {
+                    Quaternion::from_axis_angle(Vector3::unit_z(), Deg(0.0))
+                } else {
+                    Quaternion::from_axis_angle(position.normalize(), Deg(45.0))
+                };
 
-            Instance {
-                position, rotation,
-            }
+                Instance { position, rotation }
+            })
         })
-    }).collect::<Vec<_>>();
+        .collect::<Vec<_>>();
 
     let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
     // acos
@@ -124,6 +126,7 @@ async fn run() {
             TextureAspect::All,
             None,
             None,
+            None,
         )
     };
     // We don't need to configure the texture view much, so let's
@@ -158,11 +161,9 @@ async fn run() {
             count: None,
         },
     ]);
-    let obj_model = Model::load_from(
-        "cube.obj",
-        &state,
-        &bind_group_layout,
-    ).await.unwrap();
+    let obj_model = Model::load_from("cube.obj", &state, &bind_group_layout)
+        .await
+        .unwrap();
     let bind_group = Arc::new(Mutex::from(state.create_bind_group(
         &bind_group_layout,
         &[
@@ -228,7 +229,7 @@ async fn run() {
                 alpha_to_coverage_enabled: false,
             })
             .depth_stencil(DepthStencilState {
-                format: State::DEPTH_FORMAT,
+                format: DEPTH_FORMAT,
                 depth_write_enabled: true,
                 depth_compare: CompareFunction::Less,
                 stencil: Default::default(),
@@ -271,7 +272,7 @@ async fn run() {
                 alpha_to_coverage_enabled: false,
             })
             .depth_stencil(DepthStencilState {
-                format: State::DEPTH_FORMAT,
+                format: DEPTH_FORMAT,
                 depth_write_enabled: true,
                 depth_compare: CompareFunction::Less,
                 stencil: Default::default(),
@@ -300,24 +301,26 @@ async fn run() {
             sleep(Duration::new(1, 0));
             let rand = rand::thread_rng().gen_range(0.5..1.0);
             const SPACE_BETWEEN: f32 = 3.0;
-            let instances = (0..NUM_INSTANCES_PER_ROW).flat_map(|z| {
-                (0..NUM_INSTANCES_PER_ROW).map(move |x| {
-                    let x = SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0) * rand;
-                    let z = SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0) * rand;
+            let instances = (0..NUM_INSTANCES_PER_ROW)
+                .flat_map(|z| {
+                    (0..NUM_INSTANCES_PER_ROW).map(move |x| {
+                        let x =
+                            SPACE_BETWEEN * (x as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0) * rand;
+                        let z =
+                            SPACE_BETWEEN * (z as f32 - NUM_INSTANCES_PER_ROW as f32 / 2.0) * rand;
 
-                    let position = cgmath::Vector3 { x, y: 0.0, z };
+                        let position = Vector3 { x, y: 0.0, z };
 
-                    let rotation = if position.is_zero() {
-                        cgmath::Quaternion::from_axis_angle(cgmath::Vector3::unit_z(), cgmath::Deg(0.0))
-                    } else {
-                        cgmath::Quaternion::from_axis_angle(position.normalize(), cgmath::Deg(45.0))
-                    };
+                        let rotation = if position.is_zero() {
+                            Quaternion::from_axis_angle(Vector3::unit_z(), Deg(0.0))
+                        } else {
+                            Quaternion::from_axis_angle(position.normalize(), Deg(45.0))
+                        };
 
-                    Instance {
-                        position, rotation,
-                    }
+                        Instance { position, rotation }
+                    })
                 })
-            }).collect::<Vec<_>>();
+                .collect::<Vec<_>>();
 
             let instance_data = instances.iter().map(Instance::to_raw).collect::<Vec<_>>();
             state.write_buffer(&instance_buffer, 0, &instance_data);
@@ -378,7 +381,7 @@ async fn run() {
         Event::RedrawRequested(window_id) if window_id == window.id() => {
             state.update();
             let dynamic_color = dynamic_color;
-            let depth_tex = state.state.create_depth_texture();
+            let depth_tex = state.state.create_depth_texture(DEPTH_FORMAT);
             let depth_view = depth_tex.create_view(&TextureViewDescriptor::default());
             let bind_group = bind_group.clone();
             let bind_group = bind_group.lock();
@@ -427,144 +430,6 @@ async fn run() {
     });
 }
 
-/*s
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct Vertex {
-    position: [f32; 3],
-    // color: [f32; 4],
-    tex_coords: [f32; 2],
-}*/
-
-/*
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [0.0, 0.5, 0.0],
-        color: [1.0, 0.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [-0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [0.5, -0.5, 0.0],
-        color: [0.0, 0.0, 1.0, 1.0],
-    },
-    Vertex {
-        position: [0.0 + 0.25, 0.5 + 0.25, 0.0 + 0.25],
-        color: [1.0, 0.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [-0.5 + 0.25, -0.5 + 0.25, 0.0 + 0.25],
-        color: [0.0, 1.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [0.5 + 0.25, -0.5 + 0.25, 0.0 + 0.25],
-        color: [0.0, 0.0, 1.0, 1.0],
-    },
-    /*Vertex { position: [0.0 - 0.25, 0.5 - 0.25, 0.0 - 0.25], color: [1.0, 0.0, 0.0, 1.0] },
-    Vertex { position: [-0.5 - 0.25, -0.5 - 0.25, 0.0 - 0.25], color: [0.0, 1.0, 0.0, 1.0] },
-    Vertex { position: [0.5 - 0.25, -0.5 - 0.25, 0.0 - 0.25], color: [0.0, 0.0, 1.0, 1.0] },*/
-    Vertex {
-        position: [0.0 + 0.5, 0.5 + 0.5, 0.0 + 0.5],
-        color: [1.0, 0.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [-0.5 + 0.5, -0.5 + 0.5, 0.0 + 0.5],
-        color: [0.0, 1.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [0.5 + 0.5, -0.5 + 0.5, 0.0 + 0.5],
-        color: [0.0, 0.0, 1.0, 1.0],
-    },
-    /*Vertex { position: [0.0 - 0.5, 0.5 - 0.5, 0.0 - 0.5], color: [1.0, 0.0, 0.0, 1.0] },
-    Vertex { position: [-0.5 - 0.5, -0.5 - 0.5, 0.0 - 0.5], color: [0.0, 1.0, 0.0, 1.0] },
-    Vertex { position: [0.5 - 0.5, -0.5 - 0.5, 0.0 - 0.5], color: [0.0, 0.0, 1.0, 1.0] },*/
-    Vertex {
-        position: [0.0 - 0.5, 0.5, 0.0],
-        color: [1.0, 0.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [-0.5 - 0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [0.5 - 0.5, -0.5, 0.0],
-        color: [0.0, 0.0, 1.0, 1.0],
-    },
-    Vertex {
-        position: [0.0 + 0.5, 0.5, 0.0],
-        color: [1.0, 0.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [-0.5 + 0.5, -0.5, 0.0],
-        color: [0.0, 1.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [0.5 + 0.5, -0.5, 0.0],
-        color: [0.0, 0.0, 1.0, 1.0],
-    },
-    Vertex {
-        position: [0.0, 0.5 + 0.5, 0.0],
-        color: [1.0, 0.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [-0.5, -0.5 + 0.5, 0.0],
-        color: [0.0, 1.0, 0.0, 1.0],
-    },
-    Vertex {
-        position: [0.5, -0.5 + 0.5, 0.0],
-        color: [0.0, 0.0, 1.0, 1.0],
-    },
-];*/
-
-/*
-const VERTICES: &[Vertex] = &[
-    Vertex { position: [-0.0868241, 0.49240386, 0.0], color: [0.5, 0.0, 0.5, 1.0] }, // A
-    Vertex { position: [-0.49513406, 0.06958647, 0.0], color: [0.5, 0.0, 0.5, 1.0] }, // B
-    Vertex { position: [-0.21918549, -0.44939706, 0.0], color: [0.5, 0.0, 0.5, 1.0] }, // C
-    Vertex { position: [0.35966998, -0.3473291, 0.0], color: [0.5, 0.0, 0.5, 1.0] }, // D
-    Vertex { position: [0.44147372, 0.2347359, 0.0], color: [0.5, 0.0, 0.5, 1.0] }, // E
-];*/
-/*
-const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-0.0868241, 0.49240386, 0.0],
-        tex_coords: [0.4131759, 1.0 - 0.99240386],
-    }, // A
-    Vertex {
-        position: [-0.49513406, 0.06958647, 0.0],
-        tex_coords: [0.0048659444, 1.0 - 0.56958647],
-    }, // B
-    Vertex {
-        position: [-0.21918549, -0.44939706, 0.0],
-        tex_coords: [0.28081453, 1.0 - 0.05060294],
-    }, // C
-    Vertex {
-        position: [0.35966998, -0.3473291, 0.0],
-        tex_coords: [0.85967, 1.0 - 0.1526709],
-    }, // D
-    Vertex {
-        position: [0.44147372, 0.2347359, 0.0],
-        tex_coords: [0.9414737, 1.0 - 0.7347359],
-    }, // E
-];
-
-const INDICES: &[u16] = &[0, 1, 4, 1, 2, 4, 2, 3, 4, 4, 3, 2, 4, 2, 1, 4, 1, 0];
-
-impl Vertex {
-    const ATTRIBS: [VertexAttribute; 2] =
-        vertex_attr_array![0 => Float32x3, 1 => Float32x2/*Float32x4*/];
-
-    fn desc<'a>() -> VertexBufferLayout<'a> {
-        VertexBufferLayout {
-            array_stride: size_of::<Self>() as BufferAddress,
-            step_mode: VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBS,
-        }
-    }
-}*/
-
 struct SimpleRenderPassHandler<'a> {
     dynamic_color: bool,
     obj_model: &'a Model,
@@ -589,19 +454,16 @@ impl<'a> RenderPassHandler<'a> for SimpleRenderPassHandler<'a> {
 
         render_pass.set_bind_group(0, self.bind_groups[0], &[]);
         render_pass.set_bind_group(1, self.bind_groups[1], &[]);
-        // render_pass.set_vertex_buffer(0, self.vertex_buffer);
         render_pass.set_vertex_buffer(1, self.instance_buffer);
-        // render_pass.set_index_buffer(self.index_buffer, IndexFormat::Uint16);
 
-        // render_pass.draw_indexed(0..(INDICES.len() as u32), 0, 0..self.instance_count as _);
         render_pass.draw_mesh_instanced(&self.obj_model.meshes[0], 0..self.instance_count as u32);
     }
 }
 
 struct Camera {
-    eye: cgmath::Point3<f32>,
-    target: cgmath::Point3<f32>,
-    up: cgmath::Vector3<f32>,
+    eye: Point3<f32>,
+    target: Point3<f32>,
+    up: Vector3<f32>,
     aspect: f32,
     fovy: f32,
     znear: f32,
@@ -718,7 +580,7 @@ impl CameraController {
 
         let right = forward_norm.cross(camera.up);
 
-        // Redo radius calc in case the fowrard/backward is pressed.
+        // Redo radius calc in case the forward/backward is pressed.
         let forward = camera.target - camera.eye;
         let forward_mag = forward.magnitude();
 
@@ -777,9 +639,8 @@ struct InstanceRaw {
 
 impl InstanceRaw {
     fn desc<'a>() -> VertexBufferLayout<'a> {
-        use std::mem;
         VertexBufferLayout {
-            array_stride: mem::size_of::<InstanceRaw>() as BufferAddress,
+            array_stride: size_of::<InstanceRaw>() as BufferAddress,
             // We need to switch from using a step mode of Vertex to Instance
             // This means that our shaders will only change to use the next
             // instance when the shader starts processing a new instance
@@ -796,17 +657,17 @@ impl InstanceRaw {
                 // for each vec4. We'll have to reassemble the mat4 in
                 // the shader.
                 VertexAttribute {
-                    offset: mem::size_of::<[f32; 4]>() as BufferAddress,
+                    offset: size_of::<[f32; 4]>() as BufferAddress,
                     shader_location: 6,
                     format: VertexFormat::Float32x4,
                 },
                 VertexAttribute {
-                    offset: mem::size_of::<[f32; 8]>() as BufferAddress,
+                    offset: size_of::<[f32; 8]>() as BufferAddress,
                     shader_location: 7,
                     format: VertexFormat::Float32x4,
                 },
                 VertexAttribute {
-                    offset: mem::size_of::<[f32; 12]>() as BufferAddress,
+                    offset: size_of::<[f32; 12]>() as BufferAddress,
                     shader_location: 8,
                     format: VertexFormat::Float32x4,
                 },
@@ -816,8 +677,3 @@ impl InstanceRaw {
 }
 
 const NUM_INSTANCES_PER_ROW: u32 = 10;
-const INSTANCE_DISPLACEMENT: Vector3<f32> = Vector3::new(
-    NUM_INSTANCES_PER_ROW as f32 * 0.5,
-    0.0,
-    NUM_INSTANCES_PER_ROW as f32 * 0.5,
-);

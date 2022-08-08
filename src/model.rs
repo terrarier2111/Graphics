@@ -178,6 +178,7 @@ impl ContainedTexture {
             TextureAspect::All,
             None,
             None,
+            None,
         );
 
         let view = tex.create_view(&TextureViewDescriptor::default());

@@ -5,8 +5,8 @@ mod model;
 mod resources;
 
 use crate::api::{
-    DeviceRequirements, FragmentShaderState, PipelineState, PipelineStateBuilder,
-    RenderPassHandler, ShaderModuleSources, State, VertexShaderState,
+    FragmentShaderState, PipelineState, PipelineStateBuilder, RenderPassHandler,
+    ShaderModuleSources, State, StateBuilder, TextureBuilder, VertexShaderState,
 };
 use crate::model::{DrawModel, Model, ModelVertex, Vertex};
 use cgmath::prelude::*;
@@ -21,13 +21,12 @@ use std::time::Duration;
 use wgpu::{
     AddressMode, BindGroup, BindGroupEntry, BindGroupLayoutEntry, BindingResource, BindingType,
     BlendState, Buffer, BufferAddress, BufferBindingType, BufferSlice, BufferUsages, Color,
-    ColorTargetState, ColorWrites, CompareFunction, DepthStencilState, Face, Features, FilterMode,
-    FrontFace, Limits, LoadOp, MultisampleState, Operations, PolygonMode, PresentMode,
-    PrimitiveState, PrimitiveTopology, RenderPass, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPipeline, SamplerBindingType, SamplerDescriptor,
-    ShaderSource, ShaderStages, SurfaceError, TextureAspect, TextureDimension, TextureFormat,
-    TextureSampleType, TextureUsages, TextureViewDescriptor, TextureViewDimension, VertexAttribute,
-    VertexBufferLayout, VertexFormat, VertexStepMode,
+    ColorTargetState, ColorWrites, CompareFunction, DepthStencilState, Face, FilterMode, FrontFace,
+    LoadOp, MultisampleState, Operations, PolygonMode, PrimitiveState, PrimitiveTopology,
+    RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPipeline,
+    SamplerBindingType, SamplerDescriptor, ShaderSource, ShaderStages, SurfaceError,
+    TextureDimension, TextureFormat, TextureSampleType, TextureViewDescriptor,
+    TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
 };
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -46,18 +45,12 @@ async fn run() {
         .with_title("Test Window")
         .build(&event_loop)
         .unwrap();
-    let mut state = State::new(
-        &window,
-        Default::default(),
-        PresentMode::Fifo,
-        DeviceRequirements {
-            features: Features::empty(),
-            limits: Limits::default(),
-        },
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let mut state = StateBuilder::new()
+        .window(&window)
+        .build()
+        .await
+        .unwrap()
+        .unwrap();
 
     const SPACE_BETWEEN: f32 = 3.0;
     let instances = (0..NUM_INSTANCES_PER_ROW)
@@ -118,15 +111,11 @@ async fn run() {
         let dimensions = diffuse_image.dimensions();
         // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
         state.create_texture(
-            &diffuse_rgba,
-            dimensions,
-            TextureFormat::Rgba8UnormSrgb,
-            TextureUsages::TEXTURE_BINDING,
-            TextureDimension::D2,
-            TextureAspect::All,
-            None,
-            None,
-            None,
+            TextureBuilder::new()
+                .data(&diffuse_rgba)
+                .dimensions(dimensions)
+                .format(TextureFormat::Rgba8UnormSrgb)
+                .texture_dimension(TextureDimension::D2),
         )
     };
     // We don't need to configure the texture view much, so let's

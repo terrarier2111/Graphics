@@ -30,21 +30,18 @@ pub struct State {
 }
 
 impl State {
-    pub async fn new(
-        window: &Window,
-        power_pref: PowerPreference,
-        present_mode: PresentMode,
-        req: DeviceRequirements,
-    ) -> Result<Option<Self>, RequestDeviceError> {
+    pub async fn new(builder: StateBuilder<'_>) -> Result<Option<Self>, RequestDeviceError> {
         // FIXME: check if we can somehow choose a better/more descriptive return type
+        let window = builder
+            .window
+            .expect("window has to be specified before building the state");
         let size = window.inner_size();
         // The instance is a handle to our GPU
-        // Backends::all => Vulkan + Metal + DX12 + Browser WebGPU
-        let instance = Instance::new(Backends::all()); // used to create adapters and surfaces
+        let instance = Instance::new(builder.backends); // used to create adapters and surfaces
         let surface = unsafe { instance.create_surface(window) };
         let adapter = instance // adapter is a handle to our graphics card
             .request_adapter(&RequestAdapterOptions {
-                power_preference: power_pref,
+                power_preference: builder.power_pref,
                 force_fallback_adapter: false,
                 compatible_surface: Some(&surface),
             })
@@ -54,8 +51,8 @@ impl State {
                 .request_device(
                     &DeviceDescriptor {
                         label: None,
-                        features: req.features,
-                        limits: req.limits,
+                        features: builder.requirements.features,
+                        limits: builder.requirements.limits,
                     },
                     None,
                 )
@@ -67,7 +64,7 @@ impl State {
                 format: pref_format,
                 width: size.width,
                 height: size.height,
-                present_mode,
+                present_mode: builder.present_mode,
             };
             surface.configure(&device, &config);
 
@@ -228,39 +225,32 @@ impl State {
         })
     }
 
-    pub fn create_texture(
-        &self,
-        data: &[u8],
-        dimensions: (u32, u32),
-        texture_format: TextureFormat,
-        usages: TextureUsages,
-        dimension: TextureDimension,
-        aspect: TextureAspect,
-        sample_count: Option<u32>,
-        mip_info: Option<MipInfo>,
-        depth_or_array_layers: Option<u32>,
-    ) -> Texture {
-        let mip_info = mip_info.unwrap_or(MipInfo {
-            origin: Origin3d::ZERO,
-            target_mip_level: 0,
-            mip_level_count: 1,
-        });
+    pub fn create_texture(&self, builder: TextureBuilder) -> Texture {
+        let mip_info = builder.mip_info;
+        let dimensions = builder
+            .dimensions
+            .expect("dimensions have to be specified before building the texture");
         let texture_size = Extent3d {
             width: dimensions.0,
             height: dimensions.1,
-            depth_or_array_layers: depth_or_array_layers.unwrap_or(1),
+            depth_or_array_layers: builder.depth_or_array_layers,
         };
+        let format = builder
+            .format
+            .expect("format has to be specified before building the texture");
         let diffuse_texture = self.device.create_texture(&TextureDescriptor {
             // All textures are stored as 3D, we represent our 2D texture
             // by setting depth to 1.
             size: texture_size,
             mip_level_count: mip_info.mip_level_count, // We'll talk about this a little later
-            sample_count: sample_count.unwrap_or(1),
-            dimension,
+            sample_count: builder.sample_count,
+            dimension: builder
+                .texture_dimension
+                .expect("texture dimension has to be specified before building the texture"),
             // Most images are stored using sRGB so we need to reflect that here.
-            format: texture_format,
+            format,
             // COPY_DST means that we want to copy data to this texture
-            usage: usages | TextureUsages::COPY_DST,
+            usage: builder.usages,
             label: None,
         });
         self.queue.write_texture(
@@ -269,16 +259,16 @@ impl State {
                 texture: &diffuse_texture,
                 mip_level: mip_info.target_mip_level,
                 origin: mip_info.origin,
-                aspect,
+                aspect: builder.aspect,
             },
             // The actual pixel data
-            data,
+            builder
+                .data
+                .expect("data has to be specified before building the texture"),
             // The layout of the texture
             ImageDataLayout {
                 offset: 0,
-                bytes_per_row: NonZeroU32::new(
-                    texture_format.describe().block_size as u32 * dimensions.0,
-                ),
+                bytes_per_row: NonZeroU32::new(format.describe().block_size as u32 * dimensions.0),
                 rows_per_image: NonZeroU32::new(dimensions.1),
             },
             texture_size,
@@ -488,6 +478,159 @@ impl ShaderModules {
     }
 }
 
+pub struct TextureBuilder<'a> {
+    data: Option<&'a [u8]>,
+    dimensions: Option<(u32, u32)>,
+    format: Option<TextureFormat>,
+    texture_dimension: Option<TextureDimension>,
+    usages: TextureUsages,      // MAYBE(currently): we have a default
+    aspect: TextureAspect,      // we have a default
+    sample_count: u32,          // we have a default
+    mip_info: MipInfo,          // we have a default
+    depth_or_array_layers: u32, // we have a default
+}
+
+impl<'a> Default for TextureBuilder<'a> {
+    fn default() -> Self {
+        Self {
+            data: None,
+            dimensions: None,
+            format: None,
+            texture_dimension: None,
+            usages: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            aspect: TextureAspect::All,
+            sample_count: 1,
+            mip_info: MipInfo::default(),
+            depth_or_array_layers: 1,
+        }
+    }
+}
+
+impl<'a> TextureBuilder<'a> {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn data(mut self, data: &'a [u8]) -> Self {
+        self.data = Some(data);
+        self
+    }
+
+    pub fn dimensions(mut self, dimensions: (u32, u32)) -> Self {
+        self.dimensions = Some(dimensions);
+        self
+    }
+
+    pub fn format(mut self, format: TextureFormat) -> Self {
+        self.format = Some(format);
+        self
+    }
+
+    pub fn texture_dimension(mut self, texture_dimension: TextureDimension) -> Self {
+        self.texture_dimension = Some(texture_dimension);
+        self
+    }
+
+    /// The default value is TextureUsages::TEXTURE_BINDING
+    /// NOTE: TextureUsages::COPY_DST gets appended to the usages
+    pub fn usages(mut self, usages: TextureUsages) -> Self {
+        self.usages = usages | TextureUsages::COPY_DST;
+        self
+    }
+
+    /// The default value is `TextureAspect::All`
+    pub fn aspect(mut self, aspect: TextureAspect) -> Self {
+        self.aspect = aspect;
+        self
+    }
+
+    /// The default value is 1
+    pub fn sample_count(mut self, sample_count: u32) -> Self {
+        self.sample_count = sample_count;
+        self
+    }
+
+    /// The default value is `MipInfo::default()`
+    pub fn mip_info(mut self, mip_info: MipInfo) -> Self {
+        self.mip_info = mip_info;
+        self
+    }
+
+    /// The default value is 1
+    pub fn depth_or_array_layers(mut self, depth_or_array_layers: u32) -> Self {
+        self.depth_or_array_layers = depth_or_array_layers;
+        self
+    }
+
+    #[inline]
+    pub fn build(self, state: &State) -> Texture {
+        state.create_texture(self)
+    }
+}
+
+pub struct StateBuilder<'a> {
+    window: Option<&'a Window>,
+    power_pref: PowerPreference,      // we have a default
+    present_mode: PresentMode,        // we have a default
+    requirements: DeviceRequirements, // we have a default
+    backends: Backends,               // we have a default
+}
+
+impl<'a> Default for StateBuilder<'a> {
+    fn default() -> Self {
+        Self {
+            backends: Backends::all(),
+            window: None,
+            power_pref: Default::default(),
+            present_mode: Default::default(),
+            requirements: Default::default(),
+        }
+    }
+}
+
+impl<'a> StateBuilder<'a> {
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn window(mut self, window: &'a Window) -> Self {
+        self.window = Some(window);
+        self
+    }
+
+    /// The default value is `PowerPreference::LowPower`
+    pub fn power_pref(mut self, power_pref: PowerPreference) -> Self {
+        self.power_pref = power_pref;
+        self
+    }
+
+    /// The default value is `PresentMode::Fifo`
+    pub fn present_mode(mut self, present_mode: PresentMode) -> Self {
+        self.present_mode = present_mode;
+        self
+    }
+
+    // FIXME: should we rename this to `requirements`?
+    /// The default value is `DeviceRequirements::default()`
+    pub fn device_requirements(mut self, requirements: DeviceRequirements) -> Self {
+        self.requirements = requirements;
+        self
+    }
+
+    /// The default value is `Backends::all()`
+    pub fn backends(mut self, backends: Backends) -> Self {
+        self.backends = backends;
+        self
+    }
+
+    #[inline]
+    pub async fn build(self) -> Result<Option<State>, RequestDeviceError> {
+        State::new(self).await
+    }
+}
+
 pub trait RenderPassHandler<'a> {
     fn handle<'b: 'c, 'c>(
         self,
@@ -503,6 +646,17 @@ pub struct MipInfo {
     pub mip_level_count: u32,
 }
 
+impl Default for MipInfo {
+    fn default() -> Self {
+        Self {
+            origin: Origin3d::ZERO,
+            target_mip_level: 0,
+            mip_level_count: 1,
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct DeviceRequirements {
     pub features: Features,
     pub limits: Limits,

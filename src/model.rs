@@ -1,5 +1,5 @@
 use crate::resources::{load_string, load_texture};
-use crate::{State, TextureAspect};
+use crate::{State, TextureBuilder};
 use anyhow::Result;
 use image::{DynamicImage, GenericImageView};
 use std::io::{BufReader, Cursor};
@@ -9,8 +9,8 @@ use tobj::LoadOptions;
 use wgpu::{
     AddressMode, BindGroup, BindGroupEntry, BindGroupLayout, BindingResource, Buffer,
     BufferAddress, BufferUsages, FilterMode, IndexFormat, RenderPass, Sampler, SamplerDescriptor,
-    Texture, TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
-    VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
+    Texture, TextureDimension, TextureFormat, TextureView, TextureViewDescriptor, VertexAttribute,
+    VertexBufferLayout, VertexFormat, VertexStepMode,
 };
 
 pub trait Vertex {
@@ -170,15 +170,11 @@ impl ContainedTexture {
         let rgba = img.to_rgba8();
         let dimensions = img.dimensions();
         let tex = state.create_texture(
-            &rgba,
-            dimensions,
-            TextureFormat::Rgba8UnormSrgb,
-            TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            TextureDimension::D2,
-            TextureAspect::All,
-            None,
-            None,
-            None,
+            TextureBuilder::new()
+                .data(&rgba)
+                .dimensions(dimensions)
+                .format(TextureFormat::Rgba8UnormSrgb)
+                .texture_dimension(TextureDimension::D2),
         );
 
         let view = tex.create_view(&TextureViewDescriptor::default());

@@ -5,8 +5,8 @@ mod model;
 mod resources;
 
 use crate::api::{
-    FragmentShaderState, PipelineState, PipelineStateBuilder, ShaderModuleSources, State,
-    StateBuilder, TextureBuilder, VertexShaderState,
+    FragmentShaderState, PipelineBuilder, ShaderModuleSources, State, StateBuilder, TextureBuilder,
+    VertexShaderState,
 };
 use crate::model::{DrawModel, Model, ModelVertex, Vertex};
 use cgmath::prelude::*;
@@ -45,7 +45,7 @@ async fn run() {
         .with_title("Test Window")
         .build(&event_loop)
         .unwrap();
-    let mut state = StateBuilder::new().window(&window).build().await.unwrap();
+    let state = StateBuilder::new().window(&window).build().await.unwrap();
 
     const SPACE_BETWEEN: f32 = 3.0;
     let instances = (0..NUM_INSTANCES_PER_ROW)
@@ -77,7 +77,7 @@ async fn run() {
         target: (0.0, 0.0, 0.0).into(),
         // which way is "up"
         up: Vector3::unit_y(),
-        aspect: state.dimensions().0 as f32 / state.dimensions().1 as f32,
+        aspect: state.size().0 as f32 / state.size().0 as f32,
         fovy: 45.0,
         znear: 0.1,
         zfar: 100.0,
@@ -178,95 +178,101 @@ async fn run() {
             resource: camera_buffer.as_entire_binding(),
         }],
     );
-
-    state.setup_pipelines(Box::new([
-        PipelineStateBuilder::new()
-            .bind_group_layouts(&[&bind_group_layout, &camera_bind_group_layout])
-            .push_constant_ranges(&[])
-            .vertex(VertexShaderState {
-                entry_point: "vs_main",
-                buffers: &[ModelVertex::desc(), InstanceRaw::desc()],
-            })
-            .fragment(FragmentShaderState {
-                entry_point: "frag_main",
-                targets: &[Some(ColorTargetState {
-                    format: state.format(),
-                    blend: Some(BlendState::REPLACE),
-                    write_mask: ColorWrites::ALL,
-                })],
-            })
-            .primitive(PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-                polygon_mode: PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
-                unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
-                conservative: false,
-            })
-            .multisample(MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            })
-            .depth_stencil(DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            })
-            .shader_src(ShaderModuleSources::Single(ShaderSource::Wgsl(
-                include_str!("shader.wgsl").into(),
-            )))
-            .build(),
-        PipelineStateBuilder::new()
-            .bind_group_layouts(&[&bind_group_layout, &camera_bind_group_layout])
-            .push_constant_ranges(&[])
-            .vertex(VertexShaderState {
-                entry_point: "vs_main",
-                buffers: &[ModelVertex::desc(), InstanceRaw::desc()],
-            })
-            .fragment(FragmentShaderState {
-                entry_point: "frag_main",
-                targets: &[Some(ColorTargetState {
-                    format: state.format(),
-                    blend: Some(BlendState::REPLACE),
-                    write_mask: ColorWrites::ALL,
-                })],
-            })
-            .primitive(PrimitiveState {
-                topology: PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: FrontFace::Ccw,
-                cull_mode: Some(Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-                polygon_mode: PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
-                unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
-                conservative: false,
-            })
-            .multisample(MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            })
-            .depth_stencil(DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            })
-            .shader_src(ShaderModuleSources::Single(ShaderSource::Wgsl(
-                include_str!("new_shader.wgsl").into(),
-            )))
-            .build(),
-    ]) as Box<[PipelineState]>);
+    let pipelines =
+        [
+            state.create_pipeline(
+                PipelineBuilder::new()
+                    .layout(&state.create_pipeline_layout(
+                        &[&bind_group_layout, &camera_bind_group_layout],
+                        &[],
+                    ))
+                    .vertex(VertexShaderState {
+                        entry_point: "vs_main",
+                        buffers: &[ModelVertex::desc(), InstanceRaw::desc()],
+                    })
+                    .fragment(FragmentShaderState {
+                        entry_point: "frag_main",
+                        targets: &[Some(ColorTargetState {
+                            format: state.format(),
+                            blend: Some(BlendState::REPLACE),
+                            write_mask: ColorWrites::ALL,
+                        })],
+                    })
+                    .primitive(PrimitiveState {
+                        topology: PrimitiveTopology::TriangleList,
+                        strip_index_format: None,
+                        front_face: FrontFace::Ccw,
+                        cull_mode: Some(Face::Back),
+                        // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+                        polygon_mode: PolygonMode::Fill,
+                        // Requires Features::DEPTH_CLIP_CONTROL
+                        unclipped_depth: false,
+                        // Requires Features::CONSERVATIVE_RASTERIZATION
+                        conservative: false,
+                    })
+                    .multisample(MultisampleState {
+                        count: 1,
+                        mask: !0,
+                        alpha_to_coverage_enabled: false,
+                    })
+                    .depth_stencil(DepthStencilState {
+                        format: DEPTH_FORMAT,
+                        depth_write_enabled: true,
+                        depth_compare: CompareFunction::Less,
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    })
+                    .shader_src(ShaderModuleSources::Single(ShaderSource::Wgsl(
+                        include_str!("shader.wgsl").into(),
+                    ))),
+            ),
+            state.create_pipeline(
+                PipelineBuilder::new()
+                    .layout(&state.create_pipeline_layout(
+                        &[&bind_group_layout, &camera_bind_group_layout],
+                        &[],
+                    ))
+                    .vertex(VertexShaderState {
+                        entry_point: "vs_main",
+                        buffers: &[ModelVertex::desc(), InstanceRaw::desc()],
+                    })
+                    .fragment(FragmentShaderState {
+                        entry_point: "frag_main",
+                        targets: &[Some(ColorTargetState {
+                            format: state.format(),
+                            blend: Some(BlendState::REPLACE),
+                            write_mask: ColorWrites::ALL,
+                        })],
+                    })
+                    .primitive(PrimitiveState {
+                        topology: PrimitiveTopology::TriangleList,
+                        strip_index_format: None,
+                        front_face: FrontFace::Ccw,
+                        cull_mode: Some(Face::Back),
+                        // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+                        polygon_mode: PolygonMode::Fill,
+                        // Requires Features::DEPTH_CLIP_CONTROL
+                        unclipped_depth: false,
+                        // Requires Features::CONSERVATIVE_RASTERIZATION
+                        conservative: false,
+                    })
+                    .multisample(MultisampleState {
+                        count: 1,
+                        mask: !0,
+                        alpha_to_coverage_enabled: false,
+                    })
+                    .depth_stencil(DepthStencilState {
+                        format: DEPTH_FORMAT,
+                        depth_write_enabled: true,
+                        depth_compare: CompareFunction::Less,
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    })
+                    .shader_src(ShaderModuleSources::Single(ShaderSource::Wgsl(
+                        include_str!("new_shader.wgsl").into(),
+                    ))),
+            ),
+        ];
 
     let mut state = AppState {
         camera,
@@ -350,6 +356,8 @@ async fn run() {
                         }
                     }
                     WindowEvent::ThemeChanged(_) => {}
+                    WindowEvent::Ime(_) => {}
+                    WindowEvent::Occluded(_) => {}
                 }
             }
         }
@@ -369,45 +377,43 @@ async fn run() {
             let depth_view = depth_tex.create_view(&TextureViewDescriptor::default());
             let bind_group = bind_group.clone();
             let bind_group = bind_group.lock();
-            match state
-                .state
-                .render(|view, mut encoder, state, render_pipelines| {
-                    {
-                        let attachments = [Some(RenderPassColorAttachment {
-                            view: &view,
-                            resolve_target: None,
-                            ops: Operations {
-                                load: LoadOp::Clear(Color::GREEN),
+            match state.state.render(|view, mut encoder, state| {
+                {
+                    let attachments = [Some(RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: Operations {
+                            load: LoadOp::Clear(Color::GREEN),
+                            store: true,
+                        },
+                    })];
+                    let mut render_pass = state.create_render_pass(
+                        &mut encoder,
+                        &attachments,
+                        Some(RenderPassDepthStencilAttachment {
+                            view: &depth_view,
+                            depth_ops: Some(Operations {
+                                load: LoadOp::Clear(1.0),
                                 store: true,
-                            },
-                        })];
-                        let mut render_pass = state.create_render_pass(
-                            &mut encoder,
-                            &attachments,
-                            Some(RenderPassDepthStencilAttachment {
-                                view: &depth_view,
-                                depth_ops: Some(Operations {
-                                    load: LoadOp::Clear(1.0),
-                                    store: true,
-                                }),
-                                stencil_ops: None,
                             }),
-                        );
-                        if dynamic_color {
-                            render_pass.set_pipeline(render_pipelines.get(1).unwrap());
-                        } else {
-                            render_pass.set_pipeline(render_pipelines.get(0).unwrap());
-                        }
-
-                        render_pass.set_bind_group(0, &bind_group, &[]);
-                        render_pass.set_bind_group(1, &camera_bind_group, &[]);
-                        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-
-                        render_pass
-                            .draw_mesh_instanced(&obj_model.meshes[0], 0..instances.len() as u32);
+                            stencil_ops: None,
+                        }),
+                    );
+                    if dynamic_color {
+                        render_pass.set_pipeline(&pipelines[1]);
+                    } else {
+                        render_pass.set_pipeline(&pipelines[0]);
                     }
-                    encoder
-                }) {
+
+                    render_pass.set_bind_group(0, &bind_group, &[]);
+                    render_pass.set_bind_group(1, &camera_bind_group, &[]);
+                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+
+                    render_pass
+                        .draw_mesh_instanced(&obj_model.meshes[0], 0..instances.len() as u32);
+                }
+                encoder
+            }) {
                 Ok(_) => {}
                 // Reconfigure the surface if lost
                 Err(SurfaceError::Lost) => {

@@ -12,23 +12,21 @@ use wgpu::{
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, Buffer, BufferAddress, BufferUsages,
     ColorTargetState, CommandEncoder, CommandEncoderDescriptor, DepthStencilState, Device,
     DeviceDescriptor, Extent3d, Features, FragmentState, ImageCopyTexture, ImageDataLayout,
-    Instance, Limits, MultisampleState, Origin3d, PipelineLayoutDescriptor, PowerPreference,
-    PresentMode, PrimitiveState, PushConstantRange, Queue, RenderPass, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, RequestAdapterOptions, ShaderModule, ShaderModuleDescriptor,
-    ShaderSource, Surface, SurfaceConfiguration, SurfaceError, Texture, TextureAspect,
-    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    Instance, Limits, MultisampleState, Origin3d, PipelineLayout, PipelineLayoutDescriptor,
+    PowerPreference, PresentMode, PrimitiveState, PushConstantRange, Queue, RenderPass,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    RenderPipeline, RenderPipelineDescriptor, RequestAdapterOptions, ShaderModule,
+    ShaderModuleDescriptor, ShaderSource, Surface, SurfaceConfiguration, SurfaceError, Texture,
+    TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
     TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState,
 };
-use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
 pub struct State {
     surface: Surface,
     device: Device,
     queue: Queue,
-    config: RwLock<SurfaceConfiguration>,
-    render_pipelines: Box<[RenderPipeline]>, // FIXME: should this be an Arc?
+    config: RwLock<SurfaceConfiguration>, // FIXME: should we use a Mutex instead?
     surface_texture_alive: AtomicBool,
 }
 
@@ -75,62 +73,74 @@ impl State {
                 device,
                 queue,
                 config: RwLock::new(config),
-                render_pipelines: Box::new([]),
                 surface_texture_alive: Default::default(),
             });
         }
         Err(AnyError::from(NoSuitableAdapterFoundError))
     }
 
-    pub fn setup_pipelines(&mut self, pipelines: Box<[PipelineState<'_>]>) {
-        let mut finished_pipelines = Box::new_uninit_slice(pipelines.len());
-        let tmp = Vec::from(pipelines);
-        for (idx, pipeline) in tmp.into_iter().enumerate() {
-            let render_pipeline_layout =
-                self.device
-                    .create_pipeline_layout(&PipelineLayoutDescriptor {
-                        label: None,
-                        bind_group_layouts: pipeline.bind_group_layouts,
-                        push_constant_ranges: pipeline.push_constant_ranges,
-                    });
-            let shaders = pipeline.shader_sources.to_modules(&self.device);
-
-            let render_pipeline = self
-                .device
-                .create_render_pipeline(&RenderPipelineDescriptor {
-                    label: None,
-                    layout: Some(&render_pipeline_layout),
-                    vertex: VertexState {
-                        module: shaders.vertex_module(),
-                        entry_point: pipeline.vertex_shader.entry_point,
-                        buffers: pipeline.vertex_shader.buffers,
-                    },
-                    fragment: pipeline
-                        .fragment_shader
-                        .map(|fragment_shader| FragmentState {
-                            module: shaders.fragment_module(),
-                            entry_point: fragment_shader.entry_point,
-                            targets: fragment_shader.targets,
-                        }),
-                    primitive: pipeline.primitive,
-                    depth_stencil: pipeline.depth_stencil,
-                    multisample: pipeline.multisample,
-                    multiview: pipeline.multiview,
-                });
-
-            finished_pipelines[idx].write(render_pipeline);
-        }
-        // SAFETY: we can assume finished_pipelines is entirely init as
-        // we just iterated over all its entries and populated them
-        self.render_pipelines = unsafe { finished_pipelines.assume_init() };
+    pub fn create_pipeline_layout(
+        &self,
+        bind_group_layouts: &[&BindGroupLayout],
+        push_constant_ranges: &[PushConstantRange],
+    ) -> PipelineLayout {
+        self.device
+            .create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts,
+                push_constant_ranges,
+            })
     }
 
-    /// Returns whether the resizing succeeded or not
-    pub fn resize(&self, size: PhysicalSize<u32>) -> bool {
-        if size.height > 0 && size.height > 0 {
+    pub fn create_pipeline(&self, builder: PipelineBuilder<'_>) -> RenderPipeline {
+        // FIXME: try add possibility of reusing existing shaders, but don't force that on users,
+        // FIXME: maybe we could provide an enum or smth like that in order to achieve this
+        let shaders = builder
+            .shader_sources
+            .expect("shader sources have to be specified before building the pipeline")
+            .to_modules(&self.device);
+        let vertex_shader = builder
+            .vertex_shader
+            .expect("vertex shader has to be specified before building the pipeline");
+
+        self.device
+            .create_render_pipeline(&RenderPipelineDescriptor {
+                label: None,
+                layout: Some(
+                    builder
+                        .layout
+                        .expect("layout has to be specified before building the pipeline"),
+                ),
+                vertex: VertexState {
+                    module: shaders.vertex_module(),
+                    entry_point: vertex_shader.entry_point,
+                    buffers: vertex_shader.buffers,
+                },
+                fragment: builder
+                    .fragment_shader
+                    .map(|fragment_shader| FragmentState {
+                        module: shaders.fragment_module(),
+                        entry_point: fragment_shader.entry_point,
+                        targets: fragment_shader.targets,
+                    }),
+                primitive: builder
+                    .primitive
+                    .expect("primitive has to be specified before building the pipeline"),
+                depth_stencil: builder.depth_stencil,
+                multisample: builder
+                    .multisample
+                    .expect("multisample has to be specified before building the pipeline"),
+                multiview: builder.multiview,
+            })
+    }
+
+    /// returns whether the resizing succeeded or not
+    pub fn resize(&self, size: impl Into<(u32, u32)>) -> bool {
+        let size = size.into();
+        if size.0 > 0 && size.1 > 0 {
             let mut config = self.config.write();
-            config.width = size.width;
-            config.height = size.height;
+            config.width = size.0;
+            config.height = size.1;
             // FIXME: should we verify that there exist no old textures?
             self.surface.configure(&self.device, &*config);
             true
@@ -139,11 +149,8 @@ impl State {
         }
     }
 
-    pub fn render<
-        'a,
-        F: FnOnce(TextureView, CommandEncoder, &'a State, &'a Box<[RenderPipeline]>) -> CommandEncoder,
-    >(
-        &'a self,
+    pub fn render<F: FnOnce(TextureView, CommandEncoder, &State) -> CommandEncoder>(
+        &self,
         callback: F,
     ) -> Result<(), SurfaceError> {
         self.surface_texture_alive.store(true, Ordering::Release);
@@ -157,7 +164,7 @@ impl State {
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
         // let the user do stuff with the encoder
-        let encoder = callback(view, encoder, self, &self.render_pipelines);
+        let encoder = callback(view, encoder, self);
 
         self.queue.submit(once(encoder.finish()));
         output.present();
@@ -166,7 +173,7 @@ impl State {
         Ok(())
     }
 
-    /// create a render pass in the encoder
+    /// creates a render pass in the encoder
     pub fn create_render_pass<'a>(
         &self,
         encoder: &'a mut CommandEncoder,
@@ -180,16 +187,20 @@ impl State {
         })
     }
 
-    pub fn size(&self) -> PhysicalSize<u32> {
+    /// returns the size defined in the config
+    pub fn size(&self) -> (u32, u32) {
         let config = self.config.read();
-        PhysicalSize::new(config.width, config.height)
+        (config.width, config.height)
     }
 
+    /// returns the format defined in the config
     pub fn format(&self) -> TextureFormat {
         let config = self.config.read();
         config.format.clone()
     }
 
+    /// tries to update the present mode of the surface.
+    /// returns whether update succeeded or not
     pub fn try_update_present_mode(&self, present_mode: PresentMode) -> bool {
         if !self.surface_texture_alive.load(Ordering::Acquire) {
             let mut config = self.config.write();
@@ -201,30 +212,30 @@ impl State {
         }
     }
 
+    /// updates the present mode of the surface
+    /// note: this function will wait until the render call has finished
     pub fn update_present_mode(&self, present_mode: PresentMode) {
         while !self.try_update_present_mode(present_mode) {
             // do nothing, as we just want to update the present mode
         }
     }
 
+    /// returns a reference to the device
     #[inline]
     pub const fn device(&self) -> &Device {
         &self.device
     }
 
+    /// returns a reference to the queue
     #[inline]
     pub const fn queue(&self) -> &Queue {
         &self.queue
     }
 
+    /// returns a reference to the surface
     #[inline]
     pub const fn surface(&self) -> &Surface {
         &self.surface
-    }
-
-    pub fn dimensions(&self) -> (u32, u32) {
-        let config = self.config.read();
-        (config.width, config.height)
     }
 
     pub fn create_buffer<T: Pod>(&self, content: &[T], usage: BufferUsages) -> Buffer {
@@ -314,7 +325,7 @@ impl State {
     }
 
     pub fn create_depth_texture(&self, format: TextureFormat) -> Texture {
-        let (width, height) = self.dimensions();
+        let (width, height) = self.size();
         let size = Extent3d {
             width,
             height,
@@ -333,35 +344,27 @@ impl State {
     }
 }
 
-pub struct PipelineState<'a> {
-    vertex_shader: VertexShaderState<'a>,
-    fragment_shader: Option<FragmentShaderState<'a>>,
-    primitive: PrimitiveState,
-    bind_group_layouts: &'a [&'a BindGroupLayout],
-    push_constant_ranges: &'a [PushConstantRange],
-    depth_stencil: Option<DepthStencilState>,
-    multisample: MultisampleState,
-    multiview: Option<NonZeroU32>,
-    shader_sources: ShaderModuleSources<'a>,
-}
-
 #[derive(Default)]
-pub struct PipelineStateBuilder<'a> {
+pub struct PipelineBuilder<'a> {
+    layout: Option<&'a PipelineLayout>,
     vertex_shader: Option<VertexShaderState<'a>>,
     fragment_shader: Option<FragmentShaderState<'a>>,
     primitive: Option<PrimitiveState>,
-    bind_group_layouts: Option<&'a [&'a BindGroupLayout]>,
-    push_constant_ranges: Option<&'a [PushConstantRange]>,
     depth_stencil: Option<DepthStencilState>,
     multisample: Option<MultisampleState>,
     multiview: Option<NonZeroU32>,
     shader_sources: Option<ShaderModuleSources<'a>>,
 }
 
-impl<'a> PipelineStateBuilder<'a> {
+impl<'a> PipelineBuilder<'a> {
     #[inline]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn layout(mut self, layout: &'a PipelineLayout) -> Self {
+        self.layout = Some(layout);
+        self
     }
 
     pub fn vertex(mut self, vertex_shader: VertexShaderState<'a>) -> Self {
@@ -376,16 +379,6 @@ impl<'a> PipelineStateBuilder<'a> {
 
     pub fn primitive(mut self, primitive: PrimitiveState) -> Self {
         self.primitive = Some(primitive);
-        self
-    }
-
-    pub fn bind_group_layouts(mut self, bind_group_layouts: &'a [&'a BindGroupLayout]) -> Self {
-        self.bind_group_layouts = Some(bind_group_layouts);
-        self
-    }
-
-    pub fn push_constant_ranges(mut self, push_constant_ranges: &'a [PushConstantRange]) -> Self {
-        self.push_constant_ranges = Some(push_constant_ranges);
         self
     }
 
@@ -409,18 +402,8 @@ impl<'a> PipelineStateBuilder<'a> {
         self
     }
 
-    pub fn build(self) -> PipelineState<'a> {
-        PipelineState {
-            vertex_shader: self.vertex_shader.unwrap(),
-            fragment_shader: self.fragment_shader,
-            primitive: self.primitive.unwrap(),
-            bind_group_layouts: self.bind_group_layouts.unwrap(),
-            push_constant_ranges: self.push_constant_ranges.unwrap(),
-            depth_stencil: self.depth_stencil,
-            multisample: self.multisample.unwrap(),
-            multiview: self.multiview,
-            shader_sources: self.shader_sources.unwrap(),
-        }
+    pub fn build(self, state: &State) -> RenderPipeline {
+        state.create_pipeline(self)
     }
 }
 
@@ -551,24 +534,28 @@ impl<'a> TextureBuilder<'a> {
     }
 
     /// The default value is `TextureAspect::All`
+    #[inline]
     pub fn aspect(mut self, aspect: TextureAspect) -> Self {
         self.aspect = aspect;
         self
     }
 
     /// The default value is 1
+    #[inline]
     pub fn sample_count(mut self, sample_count: u32) -> Self {
         self.sample_count = sample_count;
         self
     }
 
     /// The default value is `MipInfo::default()`
+    #[inline]
     pub fn mip_info(mut self, mip_info: MipInfo) -> Self {
         self.mip_info = mip_info;
         self
     }
 
     /// The default value is 1
+    #[inline]
     pub fn depth_or_array_layers(mut self, depth_or_array_layers: u32) -> Self {
         self.depth_or_array_layers = depth_or_array_layers;
         self
@@ -612,12 +599,14 @@ impl<'a> StateBuilder<'a> {
     }
 
     /// The default value is `PowerPreference::LowPower`
+    #[inline]
     pub fn power_pref(mut self, power_pref: PowerPreference) -> Self {
         self.power_pref = power_pref;
         self
     }
 
     /// The default value is `PresentMode::Fifo`
+    #[inline]
     pub fn present_mode(mut self, present_mode: PresentMode) -> Self {
         self.present_mode = present_mode;
         self
@@ -625,12 +614,14 @@ impl<'a> StateBuilder<'a> {
 
     // FIXME: should we rename this to `requirements`?
     /// The default value is `DeviceRequirements::default()`
+    #[inline]
     pub fn device_requirements(mut self, requirements: DeviceRequirements) -> Self {
         self.requirements = requirements;
         self
     }
 
     /// The default value is `Backends::all()`
+    #[inline]
     pub fn backends(mut self, backends: Backends) -> Self {
         self.backends = backends;
         self

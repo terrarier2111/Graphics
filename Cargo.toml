@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 wgpu = "0.13.1"
-winit = "0.26.1"
+winit = "0.27.2"
 pollster = "0.2.5"
 bytemuck = { version = "1.11.0", features = ["derive"] }
 cgmath = "0.18.0"

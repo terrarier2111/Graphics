@@ -14,7 +14,7 @@ cgmath = "0.18.0"
 rand = "0.8.5"
 parking_lot = "0.12.1"
 tobj = { version = "3.2.3", features = [ "async" ] }
-anyhow = "1.0.59"
+anyhow = "1.0.60"
 
 [dependencies.image]
 version = "0.24.3"
@@ -22,7 +22,7 @@ default-features = false
 features = ["png", "jpeg"]
 
 [build-dependencies]
-anyhow = "1.0.59"
+anyhow = "1.0.60"
 fs_extra = "1.2.0"
 glob = "0.3.0"
 

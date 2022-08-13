@@ -1,5 +1,8 @@
+use anyhow::Error as AnyError;
 use bytemuck::Pod;
 use parking_lot::RwLock;
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
 use std::iter::once;
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,14 +10,14 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
     Backends, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, Buffer, BufferAddress, BufferUsages,
-    ColorTargetState, CommandEncoderDescriptor, DepthStencilState, Device, DeviceDescriptor,
-    Extent3d, Features, FragmentState, ImageCopyTexture, ImageDataLayout, Instance, Limits,
-    MultisampleState, Origin3d, PipelineLayoutDescriptor, PowerPreference, PresentMode,
-    PrimitiveState, PushConstantRange, Queue, RenderPass, RenderPassColorAttachment,
+    ColorTargetState, CommandEncoder, CommandEncoderDescriptor, DepthStencilState, Device,
+    DeviceDescriptor, Extent3d, Features, FragmentState, ImageCopyTexture, ImageDataLayout,
+    Instance, Limits, MultisampleState, Origin3d, PipelineLayoutDescriptor, PowerPreference,
+    PresentMode, PrimitiveState, PushConstantRange, Queue, RenderPass, RenderPassColorAttachment,
     RenderPassDepthStencilAttachment, RenderPassDescriptor, RenderPipeline,
-    RenderPipelineDescriptor, RequestAdapterOptions, RequestDeviceError, ShaderModule,
-    ShaderModuleDescriptor, ShaderSource, Surface, SurfaceConfiguration, SurfaceError, Texture,
-    TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    RenderPipelineDescriptor, RequestAdapterOptions, ShaderModule, ShaderModuleDescriptor,
+    ShaderSource, Surface, SurfaceConfiguration, SurfaceError, Texture, TextureAspect,
+    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
     TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState,
 };
 use winit::dpi::PhysicalSize;
@@ -30,8 +33,7 @@ pub struct State {
 }
 
 impl State {
-    pub async fn new(builder: StateBuilder<'_>) -> Result<Option<Self>, RequestDeviceError> {
-        // FIXME: check if we can somehow choose a better/more descriptive return type
+    pub async fn new(builder: StateBuilder<'_>) -> anyhow::Result<Self> {
         let window = builder
             .window
             .expect("window has to be specified before building the state");
@@ -68,16 +70,16 @@ impl State {
             };
             surface.configure(&device, &config);
 
-            return Ok(Some(Self {
+            return Ok(Self {
                 surface,
                 device,
                 queue,
                 config: RwLock::new(config),
                 render_pipelines: Box::new([]),
                 surface_texture_alive: Default::default(),
-            }));
+            });
         }
-        Ok(None)
+        Err(AnyError::from(NoSuitableAdapterFoundError))
     }
 
     pub fn setup_pipelines(&mut self, pipelines: Box<[PipelineState<'_>]>) {
@@ -137,11 +139,12 @@ impl State {
         }
     }
 
-    pub fn render<'a, F: FnOnce(&TextureView) -> Box<[Option<RenderPassColorAttachment>]>>(
+    pub fn render<
+        'a,
+        F: FnOnce(TextureView, CommandEncoder, &'a State, &'a Box<[RenderPipeline]>) -> CommandEncoder,
+    >(
         &'a self,
-        handler: impl RenderPassHandler<'a>,
-        color_provider: F,
-        depth_stencil_attachment: Option<RenderPassDepthStencilAttachment>,
+        callback: F,
     ) -> Result<(), SurfaceError> {
         self.surface_texture_alive.store(true, Ordering::Release);
         let output = self.surface.get_current_texture()?;
@@ -149,24 +152,32 @@ impl State {
         let view = output
             .texture
             .create_view(&mut TextureViewDescriptor::default()); // FIXME: do we need a way to parameterize this?
-        let mut encoder = self
+
+        let encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor::default());
-        // create a render pass in the encoder
-        let color_attachments = color_provider(&view);
-        let render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            label: None,
-            color_attachments: &color_attachments,
-            depth_stencil_attachment,
-        });
-        handler.handle(render_pass, &self.render_pipelines);
-        // FIXME: allow for more usage of command encoder
+        // let the user do stuff with the encoder
+        let encoder = callback(view, encoder, self, &self.render_pipelines);
 
         self.queue.submit(once(encoder.finish()));
         output.present();
         self.surface_texture_alive.store(false, Ordering::Release);
 
         Ok(())
+    }
+
+    /// create a render pass in the encoder
+    pub fn create_render_pass<'a>(
+        &self,
+        encoder: &'a mut CommandEncoder,
+        color_attachments: &'a [Option<RenderPassColorAttachment<'a>>],
+        depth_stencil_attachment: Option<RenderPassDepthStencilAttachment<'a>>,
+    ) -> RenderPass<'a> {
+        encoder.begin_render_pass(&RenderPassDescriptor {
+            label: None,
+            color_attachments,
+            depth_stencil_attachment,
+        })
     }
 
     pub fn size(&self) -> PhysicalSize<u32> {
@@ -626,18 +637,9 @@ impl<'a> StateBuilder<'a> {
     }
 
     #[inline]
-    pub async fn build(self) -> Result<Option<State>, RequestDeviceError> {
+    pub async fn build(self) -> anyhow::Result<State> {
         State::new(self).await
     }
-}
-
-pub trait RenderPassHandler<'a> {
-    fn handle<'b: 'c, 'c>(
-        self,
-        render_pass: RenderPass<'c>,
-        render_pipelines: &'b Box<[RenderPipeline]>,
-    ) where
-        'a: 'b;
 }
 
 pub struct MipInfo {
@@ -661,6 +663,22 @@ pub struct DeviceRequirements {
     pub features: Features,
     pub limits: Limits,
 }
+
+pub struct NoSuitableAdapterFoundError;
+
+impl Debug for NoSuitableAdapterFoundError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("couldn't create state because no suitable adapter was found")
+    }
+}
+
+impl Display for NoSuitableAdapterFoundError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("couldn't create state because no suitable adapter was found")
+    }
+}
+
+impl Error for NoSuitableAdapterFoundError {}
 
 pub const fn matrix<const COLUMNS: usize>(
     offset: u64,

@@ -5,8 +5,8 @@ mod model;
 mod resources;
 
 use crate::api::{
-    FragmentShaderState, PipelineState, PipelineStateBuilder, RenderPassHandler,
-    ShaderModuleSources, State, StateBuilder, TextureBuilder, VertexShaderState,
+    FragmentShaderState, PipelineState, PipelineStateBuilder, ShaderModuleSources, State,
+    StateBuilder, TextureBuilder, VertexShaderState,
 };
 use crate::model::{DrawModel, Model, ModelVertex, Vertex};
 use cgmath::prelude::*;
@@ -19,14 +19,14 @@ use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 use wgpu::{
-    AddressMode, BindGroup, BindGroupEntry, BindGroupLayoutEntry, BindingResource, BindingType,
-    BlendState, Buffer, BufferAddress, BufferBindingType, BufferSlice, BufferUsages, Color,
-    ColorTargetState, ColorWrites, CompareFunction, DepthStencilState, Face, FilterMode, FrontFace,
-    LoadOp, MultisampleState, Operations, PolygonMode, PrimitiveState, PrimitiveTopology,
-    RenderPass, RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPipeline,
-    SamplerBindingType, SamplerDescriptor, ShaderSource, ShaderStages, SurfaceError,
-    TextureDimension, TextureFormat, TextureSampleType, TextureViewDescriptor,
-    TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepMode,
+    AddressMode, BindGroupEntry, BindGroupLayoutEntry, BindingResource, BindingType, BlendState,
+    Buffer, BufferAddress, BufferBindingType, BufferUsages, Color, ColorTargetState, ColorWrites,
+    CompareFunction, DepthStencilState, Face, FilterMode, FrontFace, LoadOp, MultisampleState,
+    Operations, PolygonMode, PrimitiveState, PrimitiveTopology, RenderPassColorAttachment,
+    RenderPassDepthStencilAttachment, SamplerBindingType, SamplerDescriptor, ShaderSource,
+    ShaderStages, SurfaceError, TextureDimension, TextureFormat, TextureSampleType,
+    TextureViewDescriptor, TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat,
+    VertexStepMode,
 };
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -45,12 +45,7 @@ async fn run() {
         .with_title("Test Window")
         .build(&event_loop)
         .unwrap();
-    let mut state = StateBuilder::new()
-        .window(&window)
-        .build()
-        .await
-        .unwrap()
-        .unwrap();
+    let mut state = StateBuilder::new().window(&window).build().await.unwrap();
 
     const SPACE_BETWEEN: f32 = 3.0;
     let instances = (0..NUM_INSTANCES_PER_ROW)
@@ -374,33 +369,45 @@ async fn run() {
             let depth_view = depth_tex.create_view(&TextureViewDescriptor::default());
             let bind_group = bind_group.clone();
             let bind_group = bind_group.lock();
-            match state.state.render(
-                SimpleRenderPassHandler {
-                    dynamic_color,
-                    obj_model: &obj_model,
-                    instance_buffer: instance_buffer.slice(..),
-                    bind_groups: &[&bind_group, &camera_bind_group],
-                    instance_count: instances.len(),
-                },
-                |view| {
-                    Box::new([Some(RenderPassColorAttachment {
-                        view,
-                        resolve_target: None,
-                        ops: Operations {
-                            load: LoadOp::Clear(Color::GREEN),
-                            store: true,
-                        },
-                    })]) as Box<[Option<RenderPassColorAttachment>]>
-                },
-                Some(RenderPassDepthStencilAttachment {
-                    view: &depth_view,
-                    depth_ops: Some(Operations {
-                        load: LoadOp::Clear(1.0),
-                        store: true,
-                    }),
-                    stencil_ops: None,
-                }),
-            ) {
+            match state
+                .state
+                .render(|view, mut encoder, state, render_pipelines| {
+                    {
+                        let attachments = [Some(RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: Operations {
+                                load: LoadOp::Clear(Color::GREEN),
+                                store: true,
+                            },
+                        })];
+                        let mut render_pass = state.create_render_pass(
+                            &mut encoder,
+                            &attachments,
+                            Some(RenderPassDepthStencilAttachment {
+                                view: &depth_view,
+                                depth_ops: Some(Operations {
+                                    load: LoadOp::Clear(1.0),
+                                    store: true,
+                                }),
+                                stencil_ops: None,
+                            }),
+                        );
+                        if dynamic_color {
+                            render_pass.set_pipeline(render_pipelines.get(1).unwrap());
+                        } else {
+                            render_pass.set_pipeline(render_pipelines.get(0).unwrap());
+                        }
+
+                        render_pass.set_bind_group(0, &bind_group, &[]);
+                        render_pass.set_bind_group(1, &camera_bind_group, &[]);
+                        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+
+                        render_pass
+                            .draw_mesh_instanced(&obj_model.meshes[0], 0..instances.len() as u32);
+                    }
+                    encoder
+                }) {
                 Ok(_) => {}
                 // Reconfigure the surface if lost
                 Err(SurfaceError::Lost) => {
@@ -417,36 +424,6 @@ async fn run() {
         Event::LoopDestroyed => {}
         _ => {}
     });
-}
-
-struct SimpleRenderPassHandler<'a> {
-    dynamic_color: bool,
-    obj_model: &'a Model,
-    instance_buffer: BufferSlice<'a>,
-    bind_groups: &'a [&'a BindGroup],
-    instance_count: usize,
-}
-
-impl<'a> RenderPassHandler<'a> for SimpleRenderPassHandler<'a> {
-    fn handle<'b: 'c, 'c>(
-        self,
-        mut render_pass: RenderPass<'c>,
-        render_pipelines: &'b Box<[RenderPipeline]>,
-    ) where
-        'a: 'b,
-    {
-        if self.dynamic_color {
-            render_pass.set_pipeline(render_pipelines.get(1).unwrap());
-        } else {
-            render_pass.set_pipeline(render_pipelines.get(0).unwrap());
-        }
-
-        render_pass.set_bind_group(0, self.bind_groups[0], &[]);
-        render_pass.set_bind_group(1, self.bind_groups[1], &[]);
-        render_pass.set_vertex_buffer(1, self.instance_buffer);
-
-        render_pass.draw_mesh_instanced(&self.obj_model.meshes[0], 0..self.instance_count as u32);
-    }
 }
 
 struct Camera {

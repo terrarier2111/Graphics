@@ -93,12 +93,10 @@ impl State {
     }
 
     pub fn create_pipeline(&self, builder: PipelineBuilder<'_>) -> RenderPipeline {
-        // FIXME: try add possibility of reusing existing shaders, but don't force that on users,
-        // FIXME: maybe we could provide an enum or smth like that in order to achieve this
         let shaders = builder
             .shader_sources
             .expect("shader sources have to be specified before building the pipeline")
-            .to_modules(&self.device);
+            .to_modules(self);
         let vertex_shader = builder
             .vertex_shader
             .expect("vertex shader has to be specified before building the pipeline");
@@ -127,11 +125,17 @@ impl State {
                     .primitive
                     .expect("primitive has to be specified before building the pipeline"),
                 depth_stencil: builder.depth_stencil,
-                multisample: builder
-                    .multisample
-                    .expect("multisample has to be specified before building the pipeline"),
+                multisample: builder.multisample,
                 multiview: builder.multiview,
             })
+    }
+
+    /// creates a shader module from its src
+    pub fn create_shader(&self, src: ShaderSource<'_>) -> ShaderModule {
+        self.device.create_shader_module(ShaderModuleDescriptor {
+            label: None,
+            source: src,
+        })
     }
 
     /// returns whether the resizing succeeded or not
@@ -351,7 +355,7 @@ pub struct PipelineBuilder<'a> {
     fragment_shader: Option<FragmentShaderState<'a>>,
     primitive: Option<PrimitiveState>,
     depth_stencil: Option<DepthStencilState>,
-    multisample: Option<MultisampleState>,
+    multisample: MultisampleState,
     multiview: Option<NonZeroU32>,
     shader_sources: Option<ShaderModuleSources<'a>>,
 }
@@ -387,8 +391,9 @@ impl<'a> PipelineBuilder<'a> {
         self
     }
 
+    /// The default value is `MultisampleState::default()`
     pub fn multisample(mut self, multisample: MultisampleState) -> Self {
-        self.multisample = Some(multisample);
+        self.multisample = multisample;
         self
     }
 
@@ -398,10 +403,14 @@ impl<'a> PipelineBuilder<'a> {
     }
 
     pub fn shader_src(mut self, shader_sources: ShaderModuleSources<'a>) -> Self {
+        // FIXME: do we even need ShaderModuleSources, wouldn't it be cleaner to let the user
+        // FIXME: pass in either a Ref to a ShaderModule or a ShaderSource themselves?
+        // FIXME: tho this could also make it less nice to use.
         self.shader_sources = Some(shader_sources);
         self
     }
 
+    #[inline]
     pub fn build(self, state: &State) -> RenderPipeline {
         state.create_pipeline(self)
     }
@@ -424,51 +433,109 @@ pub struct FragmentShaderState<'a> {
 }
 
 pub enum ShaderModuleSources<'a> {
-    Single(ShaderSource<'a>),
-    Multi(ShaderSource<'a>, ShaderSource<'a>),
+    Single(ModuleSrc<'a>),
+    Multi(ModuleSrc<'a>, ModuleSrc<'a>),
 }
 
 impl<'a> ShaderModuleSources<'a> {
-    fn to_modules(self, device: &Device) -> ShaderModules {
+    fn to_modules(self, state: &'a State) -> ShaderModules {
         match self {
-            ShaderModuleSources::Single(src) => {
-                ShaderModules::Single(device.create_shader_module(ShaderModuleDescriptor {
-                    label: None,
-                    source: src,
-                }))
+            ShaderModuleSources::Single(src) => ShaderModules::Single(src.to_module(state)),
+            ShaderModuleSources::Multi(vertex_src, fragment_src) => {
+                ShaderModules::Multi(vertex_src.to_module(state), fragment_src.to_module(state))
             }
-            ShaderModuleSources::Multi(vertex_src, fragment_src) => ShaderModules::Multi(
-                device.create_shader_module(ShaderModuleDescriptor {
-                    label: None,
-                    source: vertex_src,
-                }),
-                device.create_shader_module(ShaderModuleDescriptor {
-                    label: None,
-                    source: fragment_src,
-                }),
-            ),
         }
     }
 }
 
-enum ShaderModules {
-    Single(ShaderModule),
-    Multi(ShaderModule, ShaderModule),
+pub enum ModuleSrc<'a> {
+    Source(ShaderSource<'a>),
+    Ref(&'a ShaderModule),
 }
 
-impl ShaderModules {
+impl<'a> ModuleSrc<'a> {
+    fn to_module(self, state: &'a State) -> MaybeOwnedModule<'a> {
+        match self {
+            ModuleSrc::Source(src) => MaybeOwnedModule::Owned(state.create_shader(src)),
+            ModuleSrc::Ref(reference) => MaybeOwnedModule::Ref(reference),
+        }
+    }
+}
+
+impl<'a> From<ShaderSource<'a>> for ModuleSrc<'a> {
+    #[inline]
+    fn from(src: ShaderSource<'a>) -> Self {
+        Self::Source(src)
+    }
+}
+
+impl<'a> From<&'a ShaderModule> for ModuleSrc<'a> {
+    #[inline]
+    fn from(src: &'a ShaderModule) -> Self {
+        Self::Ref(src)
+    }
+}
+
+enum ShaderModules<'a> {
+    Single(MaybeOwnedModule<'a>),
+    Multi(MaybeOwnedModule<'a>, MaybeOwnedModule<'a>),
+}
+
+impl ShaderModules<'_> {
     fn vertex_module(&self) -> &ShaderModule {
         match self {
-            ShaderModules::Single(module) => &module,
-            ShaderModules::Multi(vertex_module, _) => &vertex_module,
+            ShaderModules::Single(module) => module.shader_ref(),
+            ShaderModules::Multi(vertex_module, _) => vertex_module.shader_ref(),
         }
     }
 
     fn fragment_module(&self) -> &ShaderModule {
         match self {
-            ShaderModules::Single(module) => &module,
-            ShaderModules::Multi(_, fragment_module) => &fragment_module,
+            ShaderModules::Single(module) => module.shader_ref(),
+            ShaderModules::Multi(_, fragment_module) => fragment_module.shader_ref(),
         }
+    }
+}
+
+enum MaybeOwnedModule<'a> {
+    Owned(ShaderModule),
+    Ref(&'a ShaderModule),
+}
+
+impl MaybeOwnedModule<'_> {
+    fn shader_ref(&self) -> &ShaderModule {
+        match self {
+            MaybeOwnedModule::Owned(owned) => owned,
+            MaybeOwnedModule::Ref(reference) => *reference,
+        }
+    }
+}
+
+impl<'a> From<ShaderSource<'a>> for ShaderModuleSources<'a> {
+    #[inline]
+    fn from(src: ShaderSource<'a>) -> Self {
+        Self::Single(ModuleSrc::from(src))
+    }
+}
+
+impl<'a> From<(ShaderSource<'a>, ShaderSource<'a>)> for ShaderModuleSources<'a> {
+    #[inline]
+    fn from(src: (ShaderSource<'a>, ShaderSource<'a>)) -> Self {
+        Self::Multi(ModuleSrc::from(src.0), ModuleSrc::from(src.1))
+    }
+}
+
+impl<'a> From<&'a ShaderModule> for ShaderModuleSources<'a> {
+    #[inline]
+    fn from(src: &'a ShaderModule) -> Self {
+        Self::Single(ModuleSrc::from(src))
+    }
+}
+
+impl<'a> From<(&'a ShaderModule, &'a ShaderModule)> for ShaderModuleSources<'a> {
+    #[inline]
+    fn from(src: (&'a ShaderModule, &'a ShaderModule)) -> Self {
+        Self::Multi(ModuleSrc::from(src.0), ModuleSrc::from(src.1))
     }
 }
 
@@ -484,7 +551,7 @@ pub struct TextureBuilder<'a> {
     depth_or_array_layers: u32, // we have a default
 }
 
-impl<'a> Default for TextureBuilder<'a> {
+impl Default for TextureBuilder<'_> {
     fn default() -> Self {
         Self {
             data: None,
@@ -575,7 +642,7 @@ pub struct StateBuilder<'a> {
     backends: Backends,               // we have a default
 }
 
-impl<'a> Default for StateBuilder<'a> {
+impl Default for StateBuilder<'_> {
     fn default() -> Self {
         Self {
             backends: Backends::all(),

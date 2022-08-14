@@ -5,8 +5,8 @@ mod model;
 mod resources;
 
 use crate::api::{
-    FragmentShaderState, PipelineBuilder, ShaderModuleSources, State, StateBuilder, TextureBuilder,
-    VertexShaderState,
+    FragmentShaderState, ModuleSrc, PipelineBuilder, ShaderModuleSources, State, StateBuilder,
+    TextureBuilder, VertexShaderState,
 };
 use crate::model::{DrawModel, Model, ModelVertex, Vertex};
 use cgmath::prelude::*;
@@ -21,8 +21,8 @@ use std::time::Duration;
 use wgpu::{
     AddressMode, BindGroupEntry, BindGroupLayoutEntry, BindingResource, BindingType, BlendState,
     Buffer, BufferAddress, BufferBindingType, BufferUsages, Color, ColorTargetState, ColorWrites,
-    CompareFunction, DepthStencilState, Face, FilterMode, FrontFace, LoadOp, MultisampleState,
-    Operations, PolygonMode, PrimitiveState, PrimitiveTopology, RenderPassColorAttachment,
+    CompareFunction, DepthStencilState, Face, FilterMode, FrontFace, LoadOp, Operations,
+    PolygonMode, PrimitiveState, PrimitiveTopology, RenderPassColorAttachment,
     RenderPassDepthStencilAttachment, SamplerBindingType, SamplerDescriptor, ShaderSource,
     ShaderStages, SurfaceError, TextureDimension, TextureFormat, TextureSampleType,
     TextureViewDescriptor, TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat,
@@ -77,7 +77,7 @@ async fn run() {
         target: (0.0, 0.0, 0.0).into(),
         // which way is "up"
         up: Vector3::unit_y(),
-        aspect: state.size().0 as f32 / state.size().0 as f32,
+        aspect: state.size().0 as f32 / state.size().1 as f32,
         fovy: 45.0,
         znear: 0.1,
         zfar: 100.0,
@@ -210,11 +210,6 @@ async fn run() {
                         // Requires Features::CONSERVATIVE_RASTERIZATION
                         conservative: false,
                     })
-                    .multisample(MultisampleState {
-                        count: 1,
-                        mask: !0,
-                        alpha_to_coverage_enabled: false,
-                    })
                     .depth_stencil(DepthStencilState {
                         format: DEPTH_FORMAT,
                         depth_write_enabled: true,
@@ -222,7 +217,7 @@ async fn run() {
                         stencil: Default::default(),
                         bias: Default::default(),
                     })
-                    .shader_src(ShaderModuleSources::Single(ShaderSource::Wgsl(
+                    .shader_src(ShaderModuleSources::from(ShaderSource::Wgsl(
                         include_str!("shader.wgsl").into(),
                     ))),
             ),
@@ -256,11 +251,6 @@ async fn run() {
                         // Requires Features::CONSERVATIVE_RASTERIZATION
                         conservative: false,
                     })
-                    .multisample(MultisampleState {
-                        count: 1,
-                        mask: !0,
-                        alpha_to_coverage_enabled: false,
-                    })
                     .depth_stencil(DepthStencilState {
                         format: DEPTH_FORMAT,
                         depth_write_enabled: true,
@@ -268,8 +258,8 @@ async fn run() {
                         stencil: Default::default(),
                         bias: Default::default(),
                     })
-                    .shader_src(ShaderModuleSources::Single(ShaderSource::Wgsl(
-                        include_str!("new_shader.wgsl").into(),
+                    .shader_src(ShaderModuleSources::Single(ModuleSrc::Source(
+                        ShaderSource::Wgsl(include_str!("new_shader.wgsl").into()),
                     ))),
             ),
         ];

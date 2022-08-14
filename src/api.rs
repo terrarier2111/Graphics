@@ -1,6 +1,7 @@
 use anyhow::Error as AnyError;
 use bytemuck::Pod;
 use parking_lot::RwLock;
+use raw_window_handle::HasRawWindowHandle;
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 use std::iter::once;
@@ -8,7 +9,7 @@ use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicBool, Ordering};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 use wgpu::{
-    Backends, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
+    Adapter, Backends, BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout,
     BindGroupLayoutDescriptor, BindGroupLayoutEntry, Buffer, BufferAddress, BufferUsages,
     ColorTargetState, CommandEncoder, CommandEncoderDescriptor, DepthStencilState, Device,
     DeviceDescriptor, Extent3d, Features, FragmentState, ImageCopyTexture, ImageDataLayout,
@@ -20,10 +21,10 @@ use wgpu::{
     TextureAspect, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
     TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat, VertexState,
 };
-use winit::window::Window;
 
 pub struct State {
     surface: Surface,
+    adapter: Adapter, // can be used by api users to acquire information
     device: Device,
     queue: Queue,
     config: RwLock<SurfaceConfiguration>, // FIXME: should we use a Mutex instead?
@@ -31,14 +32,14 @@ pub struct State {
 }
 
 impl State {
-    pub async fn new(builder: StateBuilder<'_>) -> anyhow::Result<Self> {
+    pub async fn new<T: WindowSize>(builder: StateBuilder<T>) -> anyhow::Result<Self> {
         let window = builder
             .window
             .expect("window has to be specified before building the state");
-        let size = window.inner_size();
+        let size = window.window_size();
         // The instance is a handle to our GPU
         let instance = Instance::new(builder.backends); // used to create adapters and surfaces
-        let surface = unsafe { instance.create_surface(window) };
+        let surface = unsafe { instance.create_surface(&window) };
         let adapter = instance // adapter is a handle to our graphics card
             .request_adapter(&RequestAdapterOptions {
                 power_preference: builder.power_pref,
@@ -62,14 +63,15 @@ impl State {
             let config = SurfaceConfiguration {
                 usage: TextureUsages::RENDER_ATTACHMENT,
                 format: pref_format,
-                width: size.width,
-                height: size.height,
+                width: size.0,
+                height: size.0,
                 present_mode: builder.present_mode,
             };
             surface.configure(&device, &config);
 
             return Ok(Self {
                 surface,
+                adapter,
                 device,
                 queue,
                 config: RwLock::new(config),
@@ -240,6 +242,13 @@ impl State {
     #[inline]
     pub const fn surface(&self) -> &Surface {
         &self.surface
+    }
+
+    /// returns a reference to the adapter which can be used to
+    /// acquire information
+    #[inline]
+    pub const fn adapter(&self) -> &Adapter {
+        &self.adapter
     }
 
     pub fn create_buffer<T: Pod>(&self, content: &[T], usage: BufferUsages) -> Buffer {
@@ -634,15 +643,15 @@ impl<'a> TextureBuilder<'a> {
     }
 }
 
-pub struct StateBuilder<'a> {
-    window: Option<&'a Window>,
+pub struct StateBuilder<T: WindowSize> {
+    window: Option<T>,
     power_pref: PowerPreference,      // we have a default
     present_mode: PresentMode,        // we have a default
     requirements: DeviceRequirements, // we have a default
     backends: Backends,               // we have a default
 }
 
-impl Default for StateBuilder<'_> {
+impl<T: WindowSize> Default for StateBuilder<T> {
     fn default() -> Self {
         Self {
             backends: Backends::all(),
@@ -654,13 +663,13 @@ impl Default for StateBuilder<'_> {
     }
 }
 
-impl<'a> StateBuilder<'a> {
+impl<T: WindowSize> StateBuilder<T> {
     #[inline]
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn window(mut self, window: &'a Window) -> Self {
+    pub fn window(mut self, window: T) -> Self {
         self.window = Some(window);
         self
     }
@@ -760,4 +769,31 @@ pub const fn matrix<const COLUMNS: usize>(
     }
 
     ret
+}
+
+/// This trait is required in order to abstract over the windowing library
+///
+/// an implementation of this trait could look like this:
+/// pub struct WinitWindowWrapper<'a>(&'a Window);
+///
+/// impl WindowSize for WinitWindowWrapper<'_> {
+///
+///     fn window_size<T: Into<(u32, u32)>>(&self) -> T {
+///         let size = self.0.inner_size();
+///         (size.width, size.height)
+///     }
+///
+/// }
+///
+/// unsafe impl HasRawWindowHandle for WinitWindowWrapper<'_> {
+///
+///     fn raw_window_handle(&self) -> RawWindowHandle {
+///         self.0.raw_window_handle()
+///     }
+///
+/// }
+///
+pub trait WindowSize: HasRawWindowHandle {
+    /// Returns the size of the window in the format (width, height)
+    fn window_size(&self) -> (u32, u32);
 }

@@ -15,6 +15,7 @@ rand = "0.8.5"
 parking_lot = "0.12.1"
 tobj = { version = "3.2.3", features = [ "async" ] }
 anyhow = "1.0.60"
+raw-window-handle = "0.4.3"
 
 [dependencies.image]
 version = "0.24.3"

@@ -6,13 +6,14 @@ mod resources;
 
 use crate::api::{
     FragmentShaderState, ModuleSrc, PipelineBuilder, ShaderModuleSources, State, StateBuilder,
-    TextureBuilder, VertexShaderState,
+    TextureBuilder, VertexShaderState, WindowSize,
 };
 use crate::model::{DrawModel, Model, ModelVertex, Vertex};
 use cgmath::prelude::*;
 use cgmath::{perspective, Deg, Matrix4, Point3, Quaternion, Vector3};
 use parking_lot::Mutex;
 use rand::Rng;
+use raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 use std::mem::size_of;
 use std::sync::Arc;
 use std::thread;
@@ -30,7 +31,7 @@ use wgpu::{
 };
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::WindowBuilder;
+use winit::window::{Window, WindowBuilder};
 
 const DEPTH_FORMAT: TextureFormat = TextureFormat::Depth32Float;
 
@@ -45,7 +46,11 @@ async fn run() {
         .with_title("Test Window")
         .build(&event_loop)
         .unwrap();
-    let state = StateBuilder::new().window(&window).build().await.unwrap();
+    let state = StateBuilder::new()
+        .window(WinitWindowWrapper(&window))
+        .build()
+        .await
+        .unwrap();
 
     const SPACE_BETWEEN: f32 = 3.0;
     let instances = (0..NUM_INSTANCES_PER_ROW)
@@ -639,3 +644,18 @@ impl InstanceRaw {
 }
 
 const NUM_INSTANCES_PER_ROW: u32 = 10;
+
+pub struct WinitWindowWrapper<'a>(&'a Window);
+
+impl WindowSize for WinitWindowWrapper<'_> {
+    fn window_size(&self) -> (u32, u32) {
+        let size = self.0.inner_size();
+        (size.width, size.height)
+    }
+}
+
+unsafe impl HasRawWindowHandle for WinitWindowWrapper<'_> {
+    fn raw_window_handle(&self) -> RawWindowHandle {
+        self.0.raw_window_handle()
+    }
+}

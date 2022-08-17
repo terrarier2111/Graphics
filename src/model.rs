@@ -1,5 +1,4 @@
 use crate::resources::{load_string, load_texture};
-use crate::{State, TextureBuilder};
 use anyhow::Result;
 use image::{DynamicImage, GenericImageView};
 use std::io::{BufReader, Cursor};
@@ -12,6 +11,7 @@ use wgpu::{
     Texture, TextureDimension, TextureFormat, TextureView, TextureViewDescriptor, VertexAttribute,
     VertexBufferLayout, VertexFormat, VertexStepMode,
 };
+use wgpu_biolerless::{State, TextureBuilder};
 
 pub trait Vertex {
     fn desc<'a>() -> VertexBufferLayout<'a>;

@@ -1,13 +1,8 @@
 #![feature(new_uninit)]
 
-mod api;
 mod model;
 mod resources;
 
-use crate::api::{
-    FragmentShaderState, ModuleSrc, PipelineBuilder, ShaderModuleSources, State, StateBuilder,
-    TextureBuilder, VertexShaderState, WindowSize,
-};
 use crate::model::{DrawModel, Model, ModelVertex, Vertex};
 use cgmath::prelude::*;
 use cgmath::{perspective, Deg, Matrix4, Point3, Quaternion, Vector3};
@@ -28,6 +23,10 @@ use wgpu::{
     ShaderStages, SurfaceError, TextureDimension, TextureFormat, TextureSampleType,
     TextureViewDescriptor, TextureViewDimension, VertexAttribute, VertexBufferLayout, VertexFormat,
     VertexStepMode,
+};
+use wgpu_biolerless::{
+    FragmentShaderState, ModuleSrc, PipelineBuilder, ShaderModuleSources, State, StateBuilder,
+    TextureBuilder, VertexShaderState, WindowSize,
 };
 use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
@@ -372,43 +371,46 @@ async fn run() {
             let depth_view = depth_tex.create_view(&TextureViewDescriptor::default());
             let bind_group = bind_group.clone();
             let bind_group = bind_group.lock();
-            match state.state.render(|view, mut encoder, state| {
-                {
-                    let attachments = [Some(RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: Operations {
-                            load: LoadOp::Clear(Color::GREEN),
-                            store: true,
-                        },
-                    })];
-                    let mut render_pass = state.create_render_pass(
-                        &mut encoder,
-                        &attachments,
-                        Some(RenderPassDepthStencilAttachment {
-                            view: &depth_view,
-                            depth_ops: Some(Operations {
-                                load: LoadOp::Clear(1.0),
+            match state.state.render(
+                |view, mut encoder, state| {
+                    {
+                        let attachments = [Some(RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: Operations {
+                                load: LoadOp::Clear(Color::GREEN),
                                 store: true,
+                            },
+                        })];
+                        let mut render_pass = state.create_render_pass(
+                            &mut encoder,
+                            &attachments,
+                            Some(RenderPassDepthStencilAttachment {
+                                view: &depth_view,
+                                depth_ops: Some(Operations {
+                                    load: LoadOp::Clear(1.0),
+                                    store: true,
+                                }),
+                                stencil_ops: None,
                             }),
-                            stencil_ops: None,
-                        }),
-                    );
-                    if dynamic_color {
-                        render_pass.set_pipeline(&pipelines[1]);
-                    } else {
-                        render_pass.set_pipeline(&pipelines[0]);
+                        );
+                        if dynamic_color {
+                            render_pass.set_pipeline(&pipelines[1]);
+                        } else {
+                            render_pass.set_pipeline(&pipelines[0]);
+                        }
+
+                        render_pass.set_bind_group(0, &bind_group, &[]);
+                        render_pass.set_bind_group(1, &camera_bind_group, &[]);
+                        render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
+
+                        render_pass
+                            .draw_mesh_instanced(&obj_model.meshes[0], 0..instances.len() as u32);
                     }
-
-                    render_pass.set_bind_group(0, &bind_group, &[]);
-                    render_pass.set_bind_group(1, &camera_bind_group, &[]);
-                    render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
-
-                    render_pass
-                        .draw_mesh_instanced(&obj_model.meshes[0], 0..instances.len() as u32);
-                }
-                encoder
-            }) {
+                    encoder
+                },
+                &TextureViewDescriptor::default(),
+            ) {
                 Ok(_) => {}
                 // Reconfigure the surface if lost
                 Err(SurfaceError::Lost) => {

@@ -1,8 +1,8 @@
 use crate::model::ContainedTexture;
-use crate::State;
 use anyhow::Result;
 use std::fs::{read, read_to_string};
 use std::path::Path;
+use wgpu_biolerless::State;
 
 pub async fn load_string(file_name: &str) -> Result<String> {
     let path = Path::new(env!("OUT_DIR")).join("res").join(file_name);
